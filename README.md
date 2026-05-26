@@ -38,7 +38,8 @@ Open http://127.0.0.1:8000
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (required) |
-| `APP_PASSPHRASE` | Optional passphrase for write routes (import/save/delete). Leave empty to disable locally. |
+| `AUTH_ALLOWED_EMAILS` | Comma-separated emails allowed to sign in. Leave empty to disable auth locally. |
+| `AUTH_SECRET` | Secret for signing session cookies (required when allowlist is set). |
 | `PORT` | Set by Railway in production |
 
 ## Deploy (Railway)
@@ -48,7 +49,7 @@ Project: **adventurous-acceptance** → service **recipes**
 ```powershell
 railway link -p adventurous-acceptance -s recipes
 railway up          # when ready to deploy
-railway variables   # set DATABASE_URL, APP_PASSPHRASE
+railway variables   # set DATABASE_URL, AUTH_ALLOWED_EMAILS, AUTH_SECRET
 ```
 
 Start command (also in `railway.json`):

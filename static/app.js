@@ -7,12 +7,12 @@ import {
 
 const app = document.getElementById("app");
 const nav = document.getElementById("main-nav");
-const passphraseDialog = document.getElementById("passphrase-dialog");
-const passphraseForm = document.getElementById("passphrase-form");
-const passphraseInput = document.getElementById("passphrase-input");
-const passphraseCancel = document.getElementById("passphrase-cancel");
+const authDialog = document.getElementById("auth-dialog");
+const authForm = document.getElementById("auth-form");
+const authEmail = document.getElementById("auth-email");
+const authError = document.getElementById("auth-error");
 
-let passphrase = null;
+let signedInEmail = null;
 let wakeLock = null;
 let draftRecipe = null;
 let cookState = { servings: 4, unitSystem: "imperial", wakeLockOn: false, showImages: false };
@@ -46,12 +46,10 @@ function guide(text) {
 
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (passphrase) headers["X-App-Passphrase"] = passphrase;
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(path, { ...options, headers, credentials: "include" });
   if (res.status === 401) {
-    await promptPassphrase();
-    headers["X-App-Passphrase"] = passphrase;
-    const retry = await fetch(path, { ...options, headers });
+    await promptSignIn();
+    const retry = await fetch(path, { ...options, headers, credentials: "include" });
     if (!retry.ok) throw new Error(await retry.text());
     return retry.status === 204 ? null : retry.json();
   }
@@ -62,29 +60,69 @@ async function api(path, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-function promptPassphrase() {
+async function fetchAuthStatus() {
+  const res = await fetch("/api/auth/me", { credentials: "include" });
+  if (!res.ok) throw new Error("Could not check sign-in status");
+  return res.json();
+}
+
+function promptSignIn() {
+  authError.classList.add("hidden");
+  authError.textContent = "";
+  authEmail.value = "";
+  authDialog.showModal();
+  const blockDismiss = (e) => e.preventDefault();
+  authDialog.addEventListener("cancel", blockDismiss);
   return new Promise((resolve, reject) => {
-    passphraseInput.value = "";
-    passphraseDialog.showModal();
-    const onSubmit = (e) => {
+    const onSubmit = async (e) => {
       e.preventDefault();
-      passphrase = passphraseInput.value;
-      passphraseDialog.close();
+      authError.classList.add("hidden");
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: authEmail.value.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Sign in failed" }));
+        authError.textContent = err.detail || "Sign in failed";
+        authError.classList.remove("hidden");
+        return;
+      }
+      const data = await res.json();
+      signedInEmail = data.email || authEmail.value.trim().toLowerCase();
+      authDialog.close();
       cleanup();
       resolve();
     };
-    const onCancel = () => {
-      passphraseDialog.close();
-      cleanup();
-      reject(new Error("Passphrase required"));
-    };
     const cleanup = () => {
-      passphraseForm.removeEventListener("submit", onSubmit);
-      passphraseCancel.removeEventListener("click", onCancel);
+      authForm.removeEventListener("submit", onSubmit);
+      authDialog.removeEventListener("cancel", blockDismiss);
     };
-    passphraseForm.addEventListener("submit", onSubmit);
-    passphraseCancel.addEventListener("click", onCancel);
+    authForm.addEventListener("submit", onSubmit);
+    authDialog.addEventListener(
+      "close",
+      () => {
+        cleanup();
+        if (!signedInEmail) reject(new Error("Sign in required"));
+      },
+      { once: true }
+    );
   });
+}
+
+async function ensureAuth() {
+  const status = await fetchAuthStatus();
+  if (!status.auth_required || status.authenticated) {
+    signedInEmail = status.email || signedInEmail;
+    return true;
+  }
+  app.innerHTML = `<div class="view auth-gate">
+    ${pageHeader("Recipes", "Sign in with an authorized email to continue.")}
+    <p class="muted">Use the sign-in prompt to enter your email.</p>
+  </div>`;
+  await promptSignIn();
+  return true;
 }
 
 function setNav(links) {
@@ -218,19 +256,18 @@ function renderImport() {
   document.getElementById("url-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     status.innerHTML = `<p class="status-msg">${icon("time")} Fetching and parsing recipe…</p>`;
-    const headers = { "Content-Type": "application/json" };
-    if (passphrase) headers["X-App-Passphrase"] = passphrase;
     let res = await fetch("/api/recipes/parse", {
       method: "POST",
-      headers,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ url: document.getElementById("url-input").value }),
     });
     if (res.status === 401) {
-      await promptPassphrase();
-      headers["X-App-Passphrase"] = passphrase;
+      await promptSignIn();
       res = await fetch("/api/recipes/parse", {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ url: document.getElementById("url-input").value }),
       });
     }
@@ -628,4 +665,4 @@ async function route() {
 
 window.addEventListener("hashchange", route);
 await loadDensities();
-route();
+if (await ensureAuth()) route();

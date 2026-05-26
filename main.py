@@ -5,18 +5,27 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 import parser as recipe_parser
+from auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    allowed_emails,
+    auth_enabled,
+    cookie_secure,
+    create_session_token,
+    require_auth,
+    verify_session_token,
+)
 from db import close_pool, get_conn, init_db, open_pool
 from parser import ParseError
 
 load_dotenv()
 
-APP_PASSPHRASE = os.environ.get("APP_PASSPHRASE", "")
 BASE_DIR = Path(__file__).parent
 
 
@@ -81,16 +90,17 @@ class DeleteResponse(BaseModel):
     deleted: bool = True
 
 
-def require_passphrase(
-    x_app_passphrase: Annotated[str | None, Header()] = None,
-) -> None:
-    if not APP_PASSPHRASE:
-        return
-    if x_app_passphrase != APP_PASSPHRASE:
-        raise HTTPException(status_code=401, detail="Invalid passphrase")
+class LoginRequest(BaseModel):
+    email: EmailStr
 
 
-WriteAuth = Annotated[None, Depends(require_passphrase)]
+class AuthStatus(BaseModel):
+    auth_required: bool
+    authenticated: bool
+    email: str | None = None
+
+
+SiteAuth = Annotated[str | None, Depends(require_auth)]
 
 
 def _row_to_recipe(row: tuple) -> dict[str, Any]:
@@ -137,8 +147,47 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Recipes", lifespan=lifespan)
 
 
+@app.get("/api/auth/me")
+def auth_me(
+    recipes_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+) -> AuthStatus:
+    if not auth_enabled():
+        return AuthStatus(auth_required=False, authenticated=True)
+    email = verify_session_token(recipes_session)
+    if email:
+        return AuthStatus(auth_required=True, authenticated=True, email=email)
+    return AuthStatus(auth_required=True, authenticated=False)
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginRequest, response: Response) -> AuthStatus:
+    if not auth_enabled():
+        return AuthStatus(auth_required=False, authenticated=True)
+
+    email = body.email.strip().lower()
+    if email not in allowed_emails():
+        raise HTTPException(status_code=403, detail="This email is not authorized")
+
+    token = create_session_token(email)
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        httponly=True,
+        secure=cookie_secure(),
+        samesite="lax",
+        max_age=SESSION_MAX_AGE,
+    )
+    return AuthStatus(auth_required=True, authenticated=True, email=email)
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response) -> AuthStatus:
+    response.delete_cookie(key=SESSION_COOKIE, httponly=True, secure=cookie_secure(), samesite="lax")
+    return AuthStatus(auth_required=auth_enabled(), authenticated=False)
+
+
 @app.post("/api/recipes/parse")
-def parse_recipe_url(body: ParseUrlRequest, _auth: WriteAuth) -> Recipe:
+def parse_recipe_url(body: ParseUrlRequest, _auth: SiteAuth) -> Recipe:
     try:
         data = recipe_parser.parse_url(body.url)
     except ParseError as exc:
@@ -147,7 +196,7 @@ def parse_recipe_url(body: ParseUrlRequest, _auth: WriteAuth) -> Recipe:
 
 
 @app.post("/api/recipes/manual")
-def parse_recipe_manual(body: ManualParseRequest, _auth: WriteAuth) -> Recipe:
+def parse_recipe_manual(body: ManualParseRequest, _auth: SiteAuth) -> Recipe:
     try:
         data = recipe_parser.parse_manual(body.model_dump())
     except ParseError as exc:
@@ -156,7 +205,7 @@ def parse_recipe_manual(body: ManualParseRequest, _auth: WriteAuth) -> Recipe:
 
 
 @app.post("/api/recipes")
-def create_recipe(recipe: Recipe, _auth: WriteAuth) -> Recipe:
+def create_recipe(recipe: Recipe, _auth: SiteAuth) -> Recipe:
     payload = recipe.model_dump(exclude={"id"})
     with get_conn() as conn:
         row = conn.execute(
@@ -184,7 +233,7 @@ def create_recipe(recipe: Recipe, _auth: WriteAuth) -> Recipe:
 
 
 @app.get("/api/recipes")
-def list_recipes() -> list[RecipeSummary]:
+def list_recipes(_auth: SiteAuth) -> list[RecipeSummary]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, title, image_url, total_time FROM recipes ORDER BY lower(title)"
@@ -193,7 +242,7 @@ def list_recipes() -> list[RecipeSummary]:
 
 
 @app.get("/api/recipes/{recipe_id}")
-def get_recipe(recipe_id: int) -> Recipe:
+def get_recipe(recipe_id: int, _auth: SiteAuth) -> Recipe:
     with get_conn() as conn:
         row = conn.execute(
             """
@@ -209,7 +258,7 @@ def get_recipe(recipe_id: int) -> Recipe:
 
 
 @app.put("/api/recipes/{recipe_id}")
-def update_recipe(recipe_id: int, recipe: Recipe, _auth: WriteAuth) -> Recipe:
+def update_recipe(recipe_id: int, recipe: Recipe, _auth: SiteAuth) -> Recipe:
     payload = recipe.model_dump(exclude={"id"})
     with get_conn() as conn:
         row = conn.execute(
@@ -240,7 +289,7 @@ def update_recipe(recipe_id: int, recipe: Recipe, _auth: WriteAuth) -> Recipe:
 
 
 @app.delete("/api/recipes/{recipe_id}")
-def delete_recipe(recipe_id: int, _auth: WriteAuth) -> DeleteResponse:
+def delete_recipe(recipe_id: int, _auth: SiteAuth) -> DeleteResponse:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM recipes WHERE id = %s RETURNING id", (recipe_id,))
         conn.commit()
