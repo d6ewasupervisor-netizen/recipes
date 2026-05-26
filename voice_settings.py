@@ -29,6 +29,7 @@ class CustomCommand(BaseModel):
 class VoiceSettings(BaseModel):
     tts_voice: str = "nova"
     tts_model: Literal["tts-1", "tts-1-hd"] = "tts-1"
+    speech_rate: float = Field(default=1.0, ge=0.75, le=1.5)
     listen_seconds: float = 3.2
     push_to_talk: bool = False
     use_cloud_tts: bool = True

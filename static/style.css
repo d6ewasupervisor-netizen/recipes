@@ -1100,6 +1100,13 @@ main {
   color: var(--accent);
   animation: voice-pulse 1.2s ease-in-out infinite;
 }
+.voice-toolbar.voice-speaking .voice-mic-btn {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+.voice-toolbar.voice-speaking .voice-hear-glyph .hear-bar {
+  background: rgba(255, 255, 255, 0.35);
+  animation: none;
+}
 
 /* Live “hearing you” meter beside mic */
 .voice-hear-glyph {

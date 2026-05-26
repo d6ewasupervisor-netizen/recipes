@@ -25,7 +25,15 @@ let wakeLock = null;
 let draftRecipe = null;
 let cookState = { servings: 4, unitSystem: "imperial", wakeLockOn: false, showImages: false };
 let cookAssistant = null;
-let voiceUi = { active: false, label: "", message: "", listening: false, hearing: false, hearLevel: 0 };
+let voiceUi = {
+  active: false,
+  label: "",
+  message: "",
+  listening: false,
+  hearing: false,
+  hearLevel: 0,
+  speaking: false,
+};
 let voiceBackend = { enabled: false };
 let voiceSettings = { ...DEFAULT_VOICE_SETTINGS };
 let pendingEditImage = null;
@@ -891,7 +899,15 @@ function stopCookAssistant() {
     cookAssistant.stop();
     cookAssistant = null;
   }
-  voiceUi = { active: false, label: "", message: "", listening: false, hearing: false, hearLevel: 0 };
+  voiceUi = {
+    active: false,
+    label: "",
+    message: "",
+    listening: false,
+    hearing: false,
+    hearLevel: 0,
+    speaking: false,
+  };
   document.body.classList.remove("cook-mode");
 }
 
@@ -973,6 +989,7 @@ function updateVoicePanel() {
   dock.classList.toggle("voice-active", voiceUi.active);
   dock.classList.toggle("voice-paused", voiceUi.paused);
   dock.classList.toggle("voice-listening", voiceUi.listening && !voiceUi.paused);
+  dock.classList.toggle("voice-speaking", voiceUi.speaking);
   const status = document.getElementById("voice-status");
   if (status) {
     status.textContent =
@@ -1028,6 +1045,12 @@ function voiceSettingsDialogHtml() {
       <option value="tts-1-hd"${v.tts_model === "tts-1-hd" ? " selected" : ""}>HD (best sound)</option>
       <option value="tts-1"${v.tts_model === "tts-1" ? " selected" : ""}>Standard (faster)</option>
     </select></label>
+    <label>Speech speed <select id="vs-speed">
+      <option value="0.85"${v.speech_rate === 0.85 ? " selected" : ""}>Slower</option>
+      <option value="1"${v.speech_rate === 1 || !v.speech_rate ? " selected" : ""}>Normal</option>
+      <option value="1.15"${v.speech_rate === 1.15 ? " selected" : ""}>Faster</option>
+      <option value="1.3"${v.speech_rate === 1.3 ? " selected" : ""}>Fast</option>
+    </select></label>
     <label>Style <select id="vs-verbosity">
       <option value="minimal"${v.verbosity === "minimal" ? " selected" : ""}>Minimal</option>
       <option value="normal"${v.verbosity === "normal" ? " selected" : ""}>Normal</option>
@@ -1065,6 +1088,7 @@ async function saveVoiceSettingsFromDialog() {
     use_cloud_tts: true,
     verbosity: document.getElementById("vs-verbosity")?.value || "minimal",
     listen_seconds: parseFloat(document.getElementById("vs-listen")?.value || "3.2"),
+    speech_rate: parseFloat(document.getElementById("vs-speed")?.value || "1"),
     push_to_talk: !!document.getElementById("vs-ptt")?.checked,
     prompt_once: true,
     assistant_name: document.getElementById("vs-name")?.value?.trim() || "",
@@ -1278,6 +1302,7 @@ async function renderCook(id) {
             listening: !!s.listening,
             hearing: !!s.hearing,
             hearLevel: s.hearLevel ?? 0,
+            speaking: !!s.speaking,
           };
         updateVoicePanel();
         if (!s.active) cookAssistant = null;

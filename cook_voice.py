@@ -116,11 +116,13 @@ def synthesize_speech(text: str, settings: VoiceSettings) -> bytes:
     ) else "nova"
     model = settings.tts_model if settings.tts_model in ("tts-1", "tts-1-hd") else "tts-1-hd"
     spoken = normalize_for_speech(text)
+    rate = settings.speech_rate if 0.75 <= settings.speech_rate <= 1.5 else 1.0
     response = _client().audio.speech.create(
         model=model,
         voice=voice,
         input=spoken[:4096],
         response_format="mp3",
+        speed=rate,
     )
     return response.content
 

@@ -25,6 +25,7 @@ export const DEFAULT_VOICE_SETTINGS = {
   verbosity: "minimal",
   prompt_once: true,
   listen_seconds: 3.2,
+  speech_rate: 1.0,
   push_to_talk: false,
   personality:
     "You are a warm, encouraging cooking companion. Keep replies short and natural.",
@@ -138,7 +139,29 @@ export class CookVoiceAssistant {
     this._recordTimer = null;
     this._loopRunning = false;
     this._lastHearEmit = 0;
+    this._speakChain = Promise.resolve();
+    this._speakTicket = 0;
+    this._speaking = false;
     this._listenMs = () => Math.round((this.settings.listen_seconds ?? 3.2) * 1000);
+  }
+
+  _speechRate() {
+    const r = Number(this.settings.speech_rate);
+    if (!Number.isFinite(r)) return 1;
+    return Math.min(1.5, Math.max(0.75, r));
+  }
+
+  _haltSpeechPlayback() {
+    speechSynthesis.cancel();
+    if (this._speakResolve) {
+      this._speakResolve();
+      this._speakResolve = null;
+    }
+    if (this._audio) {
+      this._audio.pause();
+      if (this._audio.src) URL.revokeObjectURL(this._audio.src);
+      this._audio = null;
+    }
   }
 
   _abortActiveListen() {
@@ -333,6 +356,7 @@ export class CookVoiceAssistant {
       listening: this._listening,
       hearing: this._hearing,
       hearLevel: this._hearLevel,
+      speaking: this._speaking,
       cloud: this.useCloudListen,
       ...extra,
     });
@@ -380,79 +404,102 @@ export class CookVoiceAssistant {
   stop() {
     this.active = false;
     this.paused = false;
+    this._speakTicket += 1;
+    this._speakChain = Promise.resolve();
+    this._speaking = false;
     this._abortActiveListen();
     this._releaseMic();
-    speechSynthesis.cancel();
-    if (this._audio) {
-      this._audio.pause();
-      if (this._audio.src) URL.revokeObjectURL(this._audio.src);
-      this._audio = null;
-    }
-    if (this._speakResolve) {
-      this._speakResolve();
-      this._speakResolve = null;
-    }
+    this._haltSpeechPlayback();
     speechSynthesis.removeEventListener("voiceschanged", this._boundVoices);
     this.onHighlight(null);
     this._emit({ message: "" });
   }
 
-  async speak(text) {
-    if (!text?.trim()) return;
-    const spoken = normalizeForSpeech(text);
-    this._abortActiveListen();
-    speechSynthesis.cancel();
-    if (this._audio) {
-      this._audio.pause();
-      if (this._audio.src) URL.revokeObjectURL(this._audio.src);
-      this._audio = null;
-    }
+  speak(text) {
+    if (!text?.trim()) return Promise.resolve();
+    let done;
+    const promise = new Promise((resolve) => {
+      done = resolve;
+    });
+    this._speakChain = this._speakChain
+      .then(() => this._speakOnce(text))
+      .then(done, done);
+    return promise;
+  }
 
-    if (this.useCloudTts) {
-      try {
-        const res = await fetch("/api/cook/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ text: spoken }),
-        });
-        if (res.ok) {
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          this._audio = new Audio(url);
-          await new Promise((resolve) => {
-            this._audio.onended = () => {
-              URL.revokeObjectURL(url);
-              resolve();
-            };
-            this._audio.onerror = () => {
-              URL.revokeObjectURL(url);
-              resolve();
-            };
-            this._audio.play().catch(() => resolve());
+  async _speakOnce(text) {
+    const spoken = normalizeForSpeech(text);
+    const ticket = ++this._speakTicket;
+    this._abortActiveListen();
+    this._haltSpeechPlayback();
+    this._speaking = true;
+    this._emit();
+
+    const stillValid = () => ticket === this._speakTicket;
+
+    try {
+      if (this.useCloudTts) {
+        try {
+          const res = await fetch("/api/cook/speak", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ text: spoken }),
           });
-          return;
+          if (!stillValid()) return;
+          if (res.ok) {
+            const blob = await res.blob();
+            if (!stillValid()) return;
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            this._audio = audio;
+            audio.playbackRate = 1;
+            await new Promise((resolve) => {
+              const finish = () => {
+                URL.revokeObjectURL(url);
+                if (this._audio === audio) this._audio = null;
+                resolve();
+              };
+              audio.onended = finish;
+              audio.onerror = finish;
+              audio.play().catch(finish);
+            });
+            if (!stillValid()) {
+              this._haltSpeechPlayback();
+            }
+            return;
+          }
+        } catch {
+          /* fallback to browser */
         }
-      } catch {
-        /* fallback to browser */
+      }
+
+      if (!stillValid()) return;
+
+      await new Promise((resolve) => {
+        const utter = new SpeechSynthesisUtterance(spoken);
+        if (this._voice) utter.voice = this._voice;
+        utter.rate = this._speechRate();
+        this._speakResolve = resolve;
+        utter.onend = () => {
+          this._speakResolve = null;
+          resolve();
+        };
+        utter.onerror = () => {
+          this._speakResolve = null;
+          resolve();
+        };
+        speechSynthesis.speak(utter);
+      });
+      if (!stillValid()) {
+        this._haltSpeechPlayback();
+      }
+    } finally {
+      if (ticket === this._speakTicket) {
+        this._speaking = false;
+        this._emit();
       }
     }
-
-    return new Promise((resolve) => {
-      const utter = new SpeechSynthesisUtterance(spoken);
-      if (this._voice) utter.voice = this._voice;
-      utter.rate = 0.95;
-      this._speakResolve = resolve;
-      utter.onend = () => {
-        this._speakResolve = null;
-        resolve();
-      };
-      utter.onerror = () => {
-        this._speakResolve = null;
-        resolve();
-      };
-      speechSynthesis.speak(utter);
-    });
   }
 
   _releaseMic() {
@@ -806,13 +853,9 @@ export class CookVoiceAssistant {
 
   async _enterPause(speech) {
     this.paused = true;
+    this._speakTicket += 1;
     this._abortActiveListen();
-    speechSynthesis.cancel();
-    if (this._audio) {
-      this._audio.pause();
-      if (this._audio.src) URL.revokeObjectURL(this._audio.src);
-      this._audio = null;
-    }
+    this._haltSpeechPlayback();
     this._emit({ message: "Paused — say when you're back" });
     if (speech?.trim()) await this.speak(speech);
   }
