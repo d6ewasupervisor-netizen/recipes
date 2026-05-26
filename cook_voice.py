@@ -10,7 +10,7 @@ from typing import Any, Literal
 from openai import OpenAI
 from pydantic import BaseModel
 
-from cook_skills import SKILLS_PROMPT, build_session_context, transcript_needs_llm
+from cook_skills import SKILLS_PROMPT, build_session_context, transcript_needs_llm, try_kitchen_voice_answer
 from speech_normalize import normalize_for_speech
 from voice_settings import VoiceSettings
 
@@ -136,6 +136,12 @@ def interpret_command(
     settings: VoiceSettings,
     session_context: dict[str, Any] | None = None,
 ) -> VoiceCommandResult:
+    kitchen_speech = try_kitchen_voice_answer(
+        recipe, transcript, servings=servings, unit_system=unit_system
+    )
+    if kitchen_speech:
+        return VoiceCommandResult(action="answer", speech=kitchen_speech)
+
     if not transcript_needs_llm(transcript):
         return VoiceCommandResult(action="noop", speech="")
 

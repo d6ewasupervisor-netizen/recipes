@@ -31,6 +31,13 @@ from voice_settings import (
     save_voice_settings,
 )
 from parser import ParseError
+from recipe_images import (
+    delete_files_for_recipe,
+    ensure_upload_dir,
+    is_uploaded_url,
+    resolve_image_path,
+    save_recipe_image,
+)
 
 load_dotenv()
 
@@ -166,6 +173,7 @@ def _row_to_recipe(row: tuple) -> dict[str, Any]:
 async def lifespan(app: FastAPI):
     open_pool()
     init_db()
+    ensure_upload_dir()
     yield
     close_pool()
 
@@ -317,11 +325,74 @@ def update_recipe(recipe_id: int, recipe: Recipe, _auth: SiteAuth) -> Recipe:
 @app.delete("/api/recipes/{recipe_id}")
 def delete_recipe(recipe_id: int, _auth: SiteAuth) -> DeleteResponse:
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT image_url FROM recipes WHERE id = %s",
+            (recipe_id,),
+        ).fetchone()
         cur = conn.execute("DELETE FROM recipes WHERE id = %s RETURNING id", (recipe_id,))
         conn.commit()
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Recipe not found")
+    if row and is_uploaded_url(row[0]):
+        delete_files_for_recipe(recipe_id)
     return DeleteResponse()
+
+
+class ImageUrlResponse(BaseModel):
+    image_url: str | None
+
+
+@app.post("/api/recipes/{recipe_id}/image")
+async def upload_recipe_image(
+    recipe_id: int,
+    _auth: SiteAuth,
+    file: UploadFile = File(...),
+) -> ImageUrlResponse:
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    try:
+        image_url = save_recipe_image(recipe_id, data, file.content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "UPDATE recipes SET image_url = %s, updated_at = now() WHERE id = %s RETURNING id",
+            (image_url, recipe_id),
+        ).fetchone()
+        conn.commit()
+    if not row:
+        delete_files_for_recipe(recipe_id)
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    return ImageUrlResponse(image_url=image_url)
+
+
+@app.delete("/api/recipes/{recipe_id}/image")
+def remove_recipe_image(recipe_id: int, _auth: SiteAuth) -> ImageUrlResponse:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT image_url FROM recipes WHERE id = %s",
+            (recipe_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Recipe not found")
+        if is_uploaded_url(row[0]):
+            delete_files_for_recipe(recipe_id)
+        conn.execute(
+            "UPDATE recipes SET image_url = NULL, updated_at = now() WHERE id = %s",
+            (recipe_id,),
+        )
+        conn.commit()
+    return ImageUrlResponse(image_url=None)
+
+
+@app.get("/api/recipe-images/{filename}")
+def get_recipe_image(filename: str):
+    path = resolve_image_path(filename)
+    if not path:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path)
 
 
 @app.get("/api/health")

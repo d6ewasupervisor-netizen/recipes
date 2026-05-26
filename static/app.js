@@ -28,6 +28,10 @@ let cookAssistant = null;
 let voiceUi = { active: false, label: "", message: "", listening: false };
 let voiceBackend = { enabled: false };
 let voiceSettings = { ...DEFAULT_VOICE_SETTINGS };
+let pendingEditImage = null;
+let pendingEditImagePreview = null;
+let removeEditImage = false;
+let toolsMenuCloseHandler = null;
 
 function escapeHtml(s) {
   return String(s)
@@ -138,9 +142,154 @@ async function ensureAuth() {
 }
 
 function setNav(links) {
+  closeToolsMenu();
   nav.innerHTML = links
     .map((l) => navLink(l.href, l.label, l.icon || "bookmark"))
     .join("");
+}
+
+function applyTheme(theme) {
+  const dark = theme === "dark";
+  if (dark) document.documentElement.dataset.theme = "dark";
+  else delete document.documentElement.dataset.theme;
+  localStorage.setItem("recipes-theme", dark ? "dark" : "light");
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    btn.innerHTML = dark ? icon("sun") : icon("moon");
+    btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  }
+}
+
+function bindThemeToggle() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  applyTheme(localStorage.getItem("recipes-theme") === "dark" ? "dark" : "light");
+  btn.addEventListener("click", () => {
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  });
+}
+
+function closeToolsMenu() {
+  const menu = document.getElementById("tools-menu");
+  const btn = document.getElementById("tools-menu-btn");
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  if (toolsMenuCloseHandler) {
+    document.removeEventListener("click", toolsMenuCloseHandler);
+    toolsMenuCloseHandler = null;
+  }
+}
+
+function bindToolsMenu() {
+  const btn = document.getElementById("tools-menu-btn");
+  const menu = document.getElementById("tools-menu");
+  if (!btn || !menu || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = menu.hidden;
+    closeToolsMenu();
+    if (open) {
+      menu.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+      toolsMenuCloseHandler = (ev) => {
+        if (!menu.contains(ev.target) && ev.target !== btn) closeToolsMenu();
+      };
+      setTimeout(() => document.addEventListener("click", toolsMenuCloseHandler), 0);
+    }
+  });
+}
+
+function resetEditImageState() {
+  pendingEditImage = null;
+  if (pendingEditImagePreview) {
+    URL.revokeObjectURL(pendingEditImagePreview);
+    pendingEditImagePreview = null;
+  }
+  removeEditImage = false;
+}
+
+async function uploadRecipeImageFile(recipeId, file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`/api/recipes/${recipeId}/image`, {
+    method: "POST",
+    body: fd,
+    credentials: "include",
+  });
+  if (res.status === 401) {
+    await promptSignIn();
+    return uploadRecipeImageFile(recipeId, file);
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Upload failed");
+  }
+  return res.json();
+}
+
+function updateRecipePhotoPreview(url) {
+  const box = document.getElementById("recipe-photo-preview");
+  const removeBtn = document.getElementById("edit-image-remove");
+  if (!box) return;
+  if (url) {
+    box.innerHTML = `<img src="${escapeHtml(url)}" alt="">`;
+    if (removeBtn) removeBtn.hidden = false;
+  } else {
+    box.innerHTML = `<span class="muted">No photo yet</span>`;
+    if (removeBtn) removeBtn.hidden = true;
+  }
+}
+
+function setupRecipePhotoField(recipe) {
+  resetEditImageState();
+  const fileInput = document.getElementById("edit-image-file");
+  const chooseBtn = document.getElementById("edit-image-choose");
+  const removeBtn = document.getElementById("edit-image-remove");
+  const urlInput = document.getElementById("edit-image-url");
+
+  updateRecipePhotoPreview(recipe.image_url);
+
+  chooseBtn?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      alert("Choose a JPEG, PNG, WebP, or GIF image.");
+      fileInput.value = "";
+      return;
+    }
+    pendingEditImage = file;
+    removeEditImage = false;
+    if (pendingEditImagePreview) URL.revokeObjectURL(pendingEditImagePreview);
+    pendingEditImagePreview = URL.createObjectURL(file);
+    updateRecipePhotoPreview(pendingEditImagePreview);
+    if (urlInput) urlInput.value = "";
+  });
+
+  removeBtn?.addEventListener("click", () => {
+    pendingEditImage = null;
+    if (pendingEditImagePreview) {
+      URL.revokeObjectURL(pendingEditImagePreview);
+      pendingEditImagePreview = null;
+    }
+    removeEditImage = true;
+    if (fileInput) fileInput.value = "";
+    if (urlInput) urlInput.value = "";
+    updateRecipePhotoPreview(null);
+  });
+
+  urlInput?.addEventListener("input", () => {
+    if (!urlInput.value.trim()) return;
+    pendingEditImage = null;
+    removeEditImage = false;
+    if (pendingEditImagePreview) {
+      URL.revokeObjectURL(pendingEditImagePreview);
+      pendingEditImagePreview = null;
+    }
+    updateRecipePhotoPreview(urlInput.value.trim());
+  });
 }
 
 function formatTime(mins) {
@@ -432,6 +581,18 @@ function renderEditForm(recipe, id) {
           <label for="edit-notes">Notes</label>
           <textarea id="edit-notes" rows="3" placeholder="Family favorite, doubles well, etc.">${escapeHtml(recipe.notes ?? "")}</textarea>
         </div>
+        <div class="field recipe-photo-field">
+          <label>Photo</label>
+          <div id="recipe-photo-preview" class="recipe-photo-preview" aria-live="polite"></div>
+          <input type="file" id="edit-image-file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+          <div class="recipe-photo-actions">
+            <button type="button" class="btn" id="edit-image-choose">${icon("image")} Upload photo</button>
+            <button type="button" class="btn" id="edit-image-remove" hidden>Remove</button>
+          </div>
+          <label for="edit-image-url">Or image URL</label>
+          <input type="url" id="edit-image-url" placeholder="https://…" value="${escapeHtml(recipe.image_url && !String(recipe.image_url).startsWith("/api/recipe-images/") ? recipe.image_url : "")}">
+          <span class="field-hint">Imported recipes may already have a URL. Upload replaces it when you save.</span>
+        </div>
       </div>
 
       <div class="edit-hub" data-hub="ingredients">
@@ -475,14 +636,26 @@ function renderEditForm(recipe, id) {
   setupStepDragDrop();
   setupStepTextareas();
   setupIngSectionHubs();
+  setupRecipePhotoField(recipe);
+  if (recipe.image_url?.startsWith("/api/recipe-images/")) {
+    updateRecipePhotoPreview(recipe.image_url);
+  }
 
   document.getElementById("edit-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const updated = collectEditForm(recipe, id);
     try {
-      const saved = isNew
+      let saved = isNew
         ? await api("/api/recipes", { method: "POST", body: JSON.stringify(updated) })
         : await api(`/api/recipes/${id}`, { method: "PUT", body: JSON.stringify(updated) });
+      if (pendingEditImage) {
+        const { image_url } = await uploadRecipeImageFile(saved.id, pendingEditImage);
+        saved = { ...saved, image_url };
+      } else if (removeEditImage) {
+        await api(`/api/recipes/${saved.id}/image`, { method: "DELETE" });
+        saved = { ...saved, image_url: null };
+      }
+      resetEditImageState();
       draftRecipe = null;
       location.hash = `#/cook/${saved.id}`;
     } catch (err) {
@@ -526,12 +699,20 @@ function collectEditForm(recipe, id) {
     text: li.querySelector(".step-text").value,
   }));
 
+  let image_url = recipe.image_url;
+  if (removeEditImage) image_url = null;
+  else if (!pendingEditImage) {
+    const urlInput = document.getElementById("edit-image-url");
+    image_url = urlInput?.value.trim() || null;
+  }
+
   return {
     ...recipe,
     id: id === "new" ? null : parseInt(id, 10),
     title: document.getElementById("edit-title").value,
     base_servings: parseInt(document.getElementById("edit-servings").value, 10) || 4,
     notes: document.getElementById("edit-notes").value || null,
+    image_url,
     ingredients,
     instructions: steps,
     layout: { ...recipe.layout, hidden_ingredient_ids: hidden, step_order: steps.map((s) => s.step) },
@@ -652,6 +833,7 @@ async function releaseWakeLock() {
 }
 
 function clearHeaderTools() {
+  closeToolsMenu();
   const el = document.getElementById("header-tools");
   if (el) {
     el.hidden = true;
@@ -668,46 +850,73 @@ function stopCookAssistant() {
   document.body.classList.remove("cook-mode");
 }
 
-function mountCookHeader({ voiceSupported, voiceHint, wakeSupported, voiceBackend }) {
+function setCookNav(recipeId, { voiceBackend, wakeSupported, hasImage }) {
+  nav.innerHTML = `
+    <div class="cook-nav-actions">
+      <div class="tools-menu-wrap">
+        <button type="button" id="tools-menu-btn" class="header-nav-btn" aria-expanded="false" aria-haspopup="true" aria-controls="tools-menu">
+          ${icon("tools")}<span>Tools</span>
+        </button>
+        <div id="tools-menu" class="tools-menu" role="menu" hidden>
+          <div class="tools-menu-item" role="none">
+            <span>Servings</span>
+            <div class="servings-stepper">
+              <button type="button" id="servings-down" class="icon-btn" aria-label="Fewer servings">${icon("remove")}</button>
+              <span id="servings-val" aria-live="polite">4</span>
+              <button type="button" id="servings-up" class="icon-btn" aria-label="More servings">${icon("add")}</button>
+            </div>
+          </div>
+          <div class="tools-menu-item" role="none">
+            <button type="button" id="unit-toggle" class="tools-menu-btn">${icon("units")} Units: <span id="unit-chip-label">imperial</span></button>
+          </div>
+          ${
+            wakeSupported
+              ? `<div class="tools-menu-item" role="none">
+            <label><input type="checkbox" id="wake-lock"> ${icon("wakelock")} Keep screen awake</label>
+          </div>`
+              : ""
+          }
+          ${
+            hasImage
+              ? `<div class="tools-menu-item" role="none">
+            <label><input type="checkbox" id="show-images-toggle" checked> Show recipe photo</label>
+          </div>`
+              : ""
+          }
+          <div class="tools-menu-divider" role="separator"></div>
+          <button type="button" id="print-btn" class="tools-menu-btn" role="menuitem">${icon("print")} Print recipe</button>
+          ${
+            voiceBackend.enabled
+              ? `<button type="button" id="voice-settings-open" class="tools-menu-btn" role="menuitem">${icon("settings")} Voice settings</button>`
+              : ""
+          }
+          <button type="button" id="voice-stop-menu" class="tools-menu-btn" role="menuitem" hidden>${icon("mic")} Stop voice</button>
+          <p class="tools-menu-hint">Try <strong>read dry ingredients</strong>, <strong>crust ingredients</strong>, or <strong>steps for the filling</strong>. Say <strong>hold on</strong> to pause.</p>
+        </div>
+      </div>
+      <button type="button" id="theme-toggle" class="header-icon-btn" aria-label="Toggle color theme"></button>
+      <a href="#/edit/${recipeId}" class="header-nav-link">Edit</a>
+    </div>`;
+  bindThemeToggle();
+  bindToolsMenu();
+}
+
+function mountCookHeader({ voiceSupported }) {
   const el = document.getElementById("header-tools");
   if (!el) return;
+  if (!voiceSupported) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
   el.hidden = false;
   el.innerHTML = `
-    <div class="cook-quick-bar no-print" aria-label="Cook controls">
-      <div class="quick-chip servings-chip">
-        <button type="button" id="servings-down" class="icon-btn" aria-label="Fewer servings">${icon("remove")}</button>
-        <span id="servings-val" aria-live="polite"></span>
-        <button type="button" id="servings-up" class="icon-btn" aria-label="More servings">${icon("add")}</button>
-        <span class="chip-label">servings</span>
-      </div>
-      <button type="button" id="unit-toggle" class="quick-chip btn-chip" aria-label="Toggle units">${icon("units")} <span id="unit-chip-label"></span></button>
-      ${
-        wakeSupported
-          ? `<label class="quick-chip btn-chip toggle-chip"><input type="checkbox" id="wake-lock"> ${icon("wakelock")} Awake</label>`
-          : ""
-      }
-      <button type="button" id="print-btn" class="quick-chip btn-chip" aria-label="Print">${icon("print")} Print</button>
-      ${
-        voiceBackend.enabled
-          ? `<button type="button" id="voice-settings-open" class="quick-chip btn-chip" aria-label="Voice settings">${icon("settings")}</button>`
-          : ""
-      }
-    </div>
-    ${
-      voiceSupported
-        ? `<div id="voice-dock" class="voice-toolbar no-print" aria-live="polite">
-      <p id="voice-status" class="voice-status">Tap to cook hands-free</p>
-      <div id="voice-dock-controls" class="voice-toolbar-controls" hidden>
-        <button type="button" id="voice-back" class="dock-btn" aria-label="Previous">${icon("remove")}</button>
-        <button type="button" id="voice-listen" class="dock-btn voice-mic-btn" aria-label="Speak now">${icon("mic")}</button>
-        <button type="button" id="voice-next" class="dock-btn" aria-label="Next">${icon("add")}</button>
-      </div>
-      <button type="button" id="voice-toggle" class="btn voice-start-btn primary">${icon("mic")} Start voice</button>
-      <p id="voice-label" class="voice-label"></p>
-      <p class="voice-hint">${voiceHint}</p>
-    </div>`
-        : `<p class="voice-unsupported no-print">Voice needs a microphone and <code>OPENAI_API_KEY</code> on the server.</p>`
-    }`;
+    <div id="voice-dock" class="voice-toolbar no-print" aria-live="polite">
+      <p id="voice-status" class="sr-only">Tap microphone to start</p>
+      <button type="button" id="voice-back" class="dock-btn" aria-label="Previous" disabled>${icon("remove")}</button>
+      <button type="button" id="voice-listen" class="dock-btn voice-mic-btn" aria-label="Start voice assistant">${icon("mic")}</button>
+      <button type="button" id="voice-next" class="dock-btn" aria-label="Next" disabled>${icon("add")}</button>
+    </div>`;
 }
 
 function updateVoicePanel() {
@@ -717,9 +926,6 @@ function updateVoicePanel() {
   dock.classList.toggle("voice-paused", voiceUi.paused);
   dock.classList.toggle("voice-listening", voiceUi.listening && !voiceUi.paused);
   const status = document.getElementById("voice-status");
-  const label = document.getElementById("voice-label");
-  const btn = document.getElementById("voice-toggle");
-  const controls = document.getElementById("voice-dock-controls");
   if (status) {
     status.textContent =
       voiceUi.message ||
@@ -727,19 +933,22 @@ function updateVoicePanel() {
         ? "Paused — say I'm back or let's go"
         : voiceUi.active
           ? voiceUi.label || "Listening…"
-          : "Tap to cook hands-free");
+          : "Tap microphone to start");
   }
-  if (label) label.textContent = voiceUi.active && voiceUi.label ? voiceUi.label : "";
-  if (controls) controls.hidden = !voiceUi.active;
-  if (btn) {
-    btn.classList.toggle("danger-soft", voiceUi.active);
-    btn.classList.toggle("primary", !voiceUi.active);
-    btn.innerHTML = voiceUi.active
-      ? `${icon("mic")} Stop`
-      : `${icon("mic")} Start voice`;
-  }
+  const backBtn = document.getElementById("voice-back");
+  const nextBtn = document.getElementById("voice-next");
   const listenBtn = document.getElementById("voice-listen");
-  if (listenBtn) listenBtn.classList.toggle("listening", voiceUi.listening);
+  const stopMenu = document.getElementById("voice-stop-menu");
+  if (backBtn) backBtn.disabled = !voiceUi.active;
+  if (nextBtn) nextBtn.disabled = !voiceUi.active;
+  if (listenBtn) {
+    listenBtn.classList.toggle("listening", voiceUi.listening);
+    listenBtn.setAttribute(
+      "aria-label",
+      voiceUi.active ? (voiceUi.listening ? "Listening…" : "Speak now") : "Start voice assistant"
+    );
+  }
+  if (stopMenu) stopMenu.hidden = !voiceUi.active;
 }
 
 function voiceSettingsDialogHtml() {
@@ -848,23 +1057,18 @@ async function renderCook(id) {
   clearHeaderTools();
   document.body.classList.add("cook-mode");
 
-  setNav([
-    { href: "#/", label: "Recipes", icon: "bookmark" },
-    { href: `#/edit/${id}`, label: "Edit", icon: "settings" },
-  ]);
-
   const recipe = await api(`/api/recipes/${id}`);
   cookState.servings = recipe.base_servings;
   cookState.unitSystem = recipe.unit_system || "imperial";
+  cookState.showImages = !!recipe.image_url;
 
   const wakeSupported = "wakeLock" in navigator;
   voiceBackend = await fetchVoiceBackend();
   if (voiceBackend.enabled) voiceSettings = await fetchVoiceSettings();
   const voiceSupported = voiceAssistantSupported(voiceBackend);
-  const voiceHint = voiceBackend.enabled
-    ? "Say <strong>hold on</strong> to pause, <strong>I'm back</strong> to resume. <strong>Next</strong> to advance."
-    : "Add <code>OPENAI_API_KEY</code> on the server for iPhone. Say <strong>next</strong> to advance.";
-  mountCookHeader({ voiceSupported, voiceHint, wakeSupported, voiceBackend });
+
+  setCookNav(id, { voiceBackend, wakeSupported, hasImage: !!recipe.image_url });
+  mountCookHeader({ voiceSupported });
   const servingsVal = document.getElementById("servings-val");
   if (servingsVal) servingsVal.textContent = cookState.servings;
   const unitChip = document.getElementById("unit-chip-label");
@@ -945,11 +1149,15 @@ async function renderCook(id) {
     cookState.unitSystem = cookState.unitSystem === "imperial" ? "metric" : "imperial";
     drawCook();
   });
-  document.getElementById("print-btn").addEventListener("click", () => {
+  document.getElementById("print-btn")?.addEventListener("click", () => {
+    closeToolsMenu();
     document.body.classList.toggle("print-images", cookState.showImages);
     window.print();
   });
-  document.getElementById("voice-settings-open")?.addEventListener("click", openVoiceSettingsDialog);
+  document.getElementById("voice-settings-open")?.addEventListener("click", () => {
+    closeToolsMenu();
+    openVoiceSettingsDialog();
+  });
   document.getElementById("vs-dialog-cancel")?.addEventListener("click", () => {
     document.getElementById("voice-settings-dialog")?.close();
   });
@@ -963,62 +1171,71 @@ async function renderCook(id) {
     }
   });
 
-  const voiceBtn = document.getElementById("voice-toggle");
-  if (voiceBtn) {
-    voiceBtn.addEventListener("click", async () => {
-      if (cookAssistant?.active) {
-        stopCookAssistant();
+  document.getElementById("show-images-toggle")?.addEventListener("change", (e) => {
+    cookState.showImages = e.target.checked;
+    drawCook();
+  });
+
+  async function startCookVoice() {
+    if (cookAssistant?.active) return;
+    if (!cookState.wakeLockOn && "wakeLock" in navigator) {
+      const wakeCheckbox = document.getElementById("wake-lock");
+      if (wakeCheckbox) {
+        wakeCheckbox.checked = true;
+        cookState.wakeLockOn = true;
+        await requestWakeLock();
+      }
+    }
+    cookAssistant = new CookVoiceAssistant({
+      recipe,
+      backend: voiceBackend,
+      settings: voiceSettings,
+      getCookState: () => cookState,
+      setServings: (n) => {
+        cookState.servings = n;
+        drawCook();
+      },
+      setUnitSystem: (s) => {
+        cookState.unitSystem = s;
+        drawCook();
+      },
+      onPrint: () => {
+        document.body.classList.toggle("print-images", cookState.showImages);
+        window.print();
+      },
+      onHighlight: applyVoiceHighlight,
+      onStatus: (s) => {
+        voiceUi = {
+          active: s.active,
+          paused: !!s.paused,
+          label: s.label || "",
+          message: s.message || (s.listening ? "Listening…" : ""),
+          listening: !!s.listening,
+        };
         updateVoicePanel();
-        return;
-      }
-      if (!cookState.wakeLockOn && "wakeLock" in navigator) {
-        const wakeCheckbox = document.getElementById("wake-lock");
-        if (wakeCheckbox) {
-          wakeCheckbox.checked = true;
-          cookState.wakeLockOn = true;
-          await requestWakeLock();
-        }
-      }
-      cookAssistant = new CookVoiceAssistant({
-        recipe,
-        backend: voiceBackend,
-        settings: voiceSettings,
-        getCookState: () => cookState,
-        setServings: (n) => {
-          cookState.servings = n;
-          drawCook();
-        },
-        setUnitSystem: (s) => {
-          cookState.unitSystem = s;
-          drawCook();
-        },
-        onPrint: () => {
-          document.body.classList.toggle("print-images", cookState.showImages);
-          window.print();
-        },
-        onHighlight: applyVoiceHighlight,
-        onStatus: (s) => {
-          voiceUi = {
-            active: s.active,
-            paused: !!s.paused,
-            label: s.label || "",
-            message: s.message || (s.listening ? "Listening…" : ""),
-            listening: !!s.listening,
-          };
-          updateVoicePanel();
-          if (!s.active) cookAssistant = null;
-        },
-      });
-      updateVoicePanel();
-      await cookAssistant.start();
-      if (!cookAssistant?.active) updateVoicePanel();
+        if (!s.active) cookAssistant = null;
+      },
     });
     updateVoicePanel();
+    await cookAssistant.start();
+    if (!cookAssistant?.active) updateVoicePanel();
   }
+
+  document.getElementById("voice-stop-menu")?.addEventListener("click", () => {
+    closeToolsMenu();
+    stopCookAssistant();
+    updateVoicePanel();
+  });
+
+  document.getElementById("voice-listen")?.addEventListener("click", async () => {
+    if (cookAssistant?.active) cookAssistant.tapListen();
+    else await startCookVoice();
+  });
 
   document.getElementById("voice-next")?.addEventListener("click", () => cookAssistant?.tapNext());
   document.getElementById("voice-back")?.addEventListener("click", () => cookAssistant?.tapBack());
-  document.getElementById("voice-listen")?.addEventListener("click", () => cookAssistant?.tapListen());
+
+  updateVoicePanel();
 
   const wakeCheckbox = document.getElementById("wake-lock");
   if (wakeCheckbox) {
@@ -1044,6 +1261,7 @@ async function route() {
   clearHeaderTools();
   document.body.classList.remove("cook-mode");
   await releaseWakeLock();
+  closeToolsMenu();
   const hash = location.hash.slice(1) || "/";
   const parts = hash.split("/").filter(Boolean);
 
@@ -1059,5 +1277,6 @@ async function route() {
 }
 
 window.addEventListener("hashchange", route);
+applyTheme(localStorage.getItem("recipes-theme") === "dark" ? "dark" : "light");
 await loadDensities();
 if (await ensureAuth()) route();

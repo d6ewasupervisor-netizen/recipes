@@ -9,6 +9,9 @@ __pycache__/
 .env
 .env.local
 
+data/recipe-images/*
+!data/recipe-images/.gitkeep
+
 *.log
 .DS_Store
 Thumbs.db

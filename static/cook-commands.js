@@ -10,9 +10,16 @@ import {
   PAUSE_HINT,
   RESUME_ACK,
 } from "./voice-pause-phrases.js";
+import {
+  filterIngredients,
+  filterStepsForSection,
+  formatIngredientList,
+  formatStepList,
+  parseKitchenQuery,
+} from "./kitchen-knowledge.js";
 
 export const COMMAND_HELP =
-  "Next, back, repeat. Say hold on to pause, I'm back to resume. Read remaining ingredients, print, or ask amounts.";
+  "Next, back, repeat. Hold on to pause. Try: read dry ingredients, crust ingredients, or steps for the filling.";
 
 /** @param {object} ctx */
 export function buildSessionContext(ctx) {
@@ -77,6 +84,22 @@ export function matchLocalCommand(transcript, ctx) {
       return { action: "help", speech: PAUSE_HINT };
     }
     return null;
+  }
+
+  const kitchen = parseKitchenQuery(transcript);
+  if (kitchen) {
+    if (kitchen.kind === "section_steps" && kitchen.section) {
+      const steps = filterStepsForSection(instructions, kitchen.section);
+      return {
+        action: "answer",
+        speech: formatStepList(steps, kitchen.label, stepDisplay),
+      };
+    }
+    const filtered = filterIngredients(visibleIngredients, kitchen);
+    return {
+      action: "answer",
+      speech: formatIngredientList(filtered, kitchen.label, ingredientDisplay),
+    };
   }
 
   if (/^(next|continue|done|ok|okay|yes|ready|go on|move on|skip)$/.test(t)) {
@@ -196,11 +219,15 @@ const FAST_PATTERNS = [
   /\bgo to (step|ingredient) \d+/,
   /\b(hold on|hang on|hold up|wait|pause|stand by)\b/,
   /\b(i'?m back|let'?s go|start again|begin again)\b/,
+  /\b(dry|wet)\s+ingredients?\b/,
+  /\bingredients?\s+for\s+(?:the\s+)?\w+/,
+  /\bsteps?\s+for\s+(?:the\s+)?\w+/,
 ];
 
 export function needsLlm(transcript) {
   const t = transcript.toLowerCase().trim();
   if (!t) return false;
+  if (parseKitchenQuery(transcript)) return false;
   if (FAST_PATTERNS.some((re) => re.test(t))) return false;
   if (/\b(substitut|instead of|swap|replace|can i use|what if)\b/.test(t)) return true;
   if (/\b(how much|how many|oven|temperature|refrigerat|how long)\b/.test(t)) return true;

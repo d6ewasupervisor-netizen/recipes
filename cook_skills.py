@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+from kitchen_knowledge import (
+    filter_ingredients,
+    filter_steps_for_section,
+    format_ingredient_list,
+    format_step_list,
+    parse_kitchen_query,
+)
 
 # Kept short for latency; client mirrors key rules for instant handling.
 SKILLS_PROMPT = """SKILLS (apply without inventing recipe facts):
 - Navigation: next/back/repeat; read remaining or all ingredients/steps from current index.
+- Kitchen lists (use recipe ingredients/steps only; never invent items):
+  • Dry/wet: classify by item text and ingredient group labels ("Dry mix", "Wet mix").
+  • Sections: crust/pastry, filling, topping, frosting, glaze, sauce, batter, marinade, assembly, garnish.
+  • Match section ingredients via ingredient.group and item/raw text; match section steps via step text or "For the crust:" blocks.
+  • Examples: "read dry ingredients", "list wet ingredients", "crust ingredients", "steps for the filling".
 - Servings: scale all ingredient amounts proportionally (base_servings → current_servings).
 - Units: imperial↔metric; volumes may convert to grams when density_key exists in recipe data.
 - Substitutions: suggest only common safe swaps (butter↔oil, milk↔cream, brown↔white sugar); warn when unsure; never change recipe DB.
@@ -68,6 +82,9 @@ def transcript_needs_llm(transcript: str) -> bool:
         t,
     ):
         return False
+    if parse_kitchen_query(transcript):
+        return False
+
     fast = (
         r"^(next|continue|done|ok|okay|yes|ready|go on|move on|skip)$",
         r"^(back|previous|repeat|again|stop|quit|pause|resume|help)$",
@@ -79,7 +96,6 @@ def transcript_needs_llm(transcript: str) -> bool:
         r"\bgo to (step|ingredient) \d+\b",
         r"^ingredient \d+$",
     )
-    import re
 
     for pat in fast:
         if re.search(pat, t):
@@ -90,3 +106,45 @@ def transcript_needs_llm(transcript: str) -> bool:
     if re.search(r"^(how|what|why|can|should|is|are|does)\b", t):
         return True
     return len(t.split()) > 6
+
+
+def try_kitchen_voice_answer(
+    recipe: dict[str, Any],
+    transcript: str,
+    *,
+    servings: int,
+    unit_system: str,
+) -> str | None:
+    """Instant answer for dry/wet/section kitchen queries (server-side mirror of client)."""
+    query = parse_kitchen_query(transcript)
+    if not query:
+        return None
+
+    hidden = set((recipe.get("layout") or {}).get("hidden_ingredient_ids") or [])
+    ingredients = [i for i in recipe.get("ingredients") or [] if i.get("id") not in hidden]
+    steps = list(recipe.get("instructions") or [])
+    order = (recipe.get("layout") or {}).get("step_order")
+    if order:
+        by_step = {s["step"]: s for s in steps}
+        steps = [by_step[n] for n in order if n in by_step]
+
+    kind = query["kind"]
+    label = query["label"]
+
+    if kind in ("dry", "wet", "section_ingredients"):
+        filtered = filter_ingredients(ingredients, kind=kind, section=query.get("section"))
+        return format_ingredient_list(
+            filtered,
+            label,
+            display_fn=lambda ing: ing.get("raw") or ing.get("item") or "",
+        )
+
+    if kind == "section_steps" and query.get("section"):
+        matched = filter_steps_for_section(steps, query["section"])
+        return format_step_list(
+            matched,
+            label,
+            display_fn=lambda s: s[1].get("text") or "",
+        )
+
+    return None

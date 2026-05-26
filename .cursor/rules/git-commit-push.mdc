@@ -1,0 +1,17 @@
+---
+description: Commit and push to remote after every completed change set
+alwaysApply: true
+---
+
+# Git: commit and push after every change
+
+When you finish a coherent set of edits (feature, fix, or refactor), **always**:
+
+1. Run `git status` and `git diff` to review what changed.
+2. Stage only relevant files (never `.env` or secrets).
+3. Create a clear commit with a complete-sentence message focused on **why**.
+4. **Push to the remote** (`git push`) unless the user explicitly asked not to push in that turn.
+
+Do not leave completed work only in the working tree. If push fails (auth, branch protection), report the error and what was committed locally.
+
+The user wants every agent instance to follow this so the repo stays in sync with deployed work.
