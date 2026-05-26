@@ -386,7 +386,7 @@ async function renderList() {
       <h2>Your recipe box is empty</h2>
       <p>Start by importing a recipe from a link, or paste ingredients and steps yourself.</p>
       <ol class="steps-guide getting-started">
-        <li><strong>Import</strong> Paste a URL from AllRecipes, NYT Cooking, or hundreds of other sites.</li>
+        <li><strong>Import</strong> Paste one URL or many (one per line) from AllRecipes, NYT Cooking, or hundreds of other sites.</li>
         <li><strong>Edit</strong> Adjust servings, hide ingredients, group sections, and reorder steps.</li>
         <li><strong>Cook</strong> Scale on the fly, switch to metric, hands-free voice guidance, keep your screen awake, and print.</li>
       </ol>
@@ -421,21 +421,109 @@ async function renderList() {
 
 // --- Import view ---
 
+function parseImportUrls(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+async function parseRecipeUrl(url) {
+  let res = await fetch("/api/recipes/parse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ url }),
+  });
+  if (res.status === 401) {
+    await promptSignIn();
+    res = await fetch("/api/recipes/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ url }),
+    });
+  }
+  if (res.status === 422) {
+    const detail = (await res.json()).detail || "Could not extract a recipe from that link.";
+    const err = new Error(detail);
+    err.parseFailed = true;
+    throw err;
+  }
+  if (!res.ok) {
+    const detail = (await res.json()).detail || res.statusText;
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+async function bulkImportRecipes(urls, statusEl, formEl) {
+  const total = urls.length;
+  const results = [];
+  formEl.querySelector("button[type=submit]").disabled = true;
+  formEl.querySelector("#url-input").disabled = true;
+
+  statusEl.innerHTML = `<div class="bulk-import-progress">
+    <p class="status-msg" id="bulk-import-current">${icon("time")} Starting import…</p>
+    <ul class="bulk-import-log" id="bulk-import-log"></ul>
+  </div>`;
+
+  const currentEl = document.getElementById("bulk-import-current");
+  const logEl = document.getElementById("bulk-import-log");
+
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    currentEl.innerHTML = `${icon("time")} Importing ${i + 1} of ${total}…`;
+    try {
+      const recipe = await parseRecipeUrl(url);
+      const saved = await api("/api/recipes", { method: "POST", body: JSON.stringify(recipe) });
+      results.push({ url, ok: true, title: saved.title });
+      logEl.insertAdjacentHTML(
+        "beforeend",
+        `<li class="bulk-import-ok">${icon("bookmark")} ${escapeHtml(saved.title)}</li>`
+      );
+    } catch (err) {
+      results.push({ url, ok: false, error: err.message });
+      logEl.insertAdjacentHTML(
+        "beforeend",
+        `<li class="bulk-import-fail"><span class="bulk-import-url">${escapeHtml(url)}</span> — ${escapeHtml(err.message)}</li>`
+      );
+    }
+  }
+
+  const okCount = results.filter((r) => r.ok).length;
+  const failCount = total - okCount;
+  const summary =
+    failCount === 0
+      ? `${okCount} recipe${okCount === 1 ? "" : "s"} imported.`
+      : `${okCount} imported, ${failCount} failed.`;
+
+  currentEl.innerHTML = `${icon("bookmark")} ${summary}`;
+  statusEl.insertAdjacentHTML(
+    "beforeend",
+    `<div class="bulk-import-done"><a href="#/" class="btn primary btn-lg">${icon("bookmark")} View recipes</a></div>`
+  );
+
+  formEl.querySelector("button[type=submit]").disabled = false;
+  formEl.querySelector("#url-input").disabled = false;
+}
+
 function renderImport() {
   setNav([{ href: "#/", label: "Recipes", icon: "bookmark" }]);
 
   app.innerHTML = `<div class="view import-view">
-    ${pageHeader("Import a recipe", "Paste a link from any recipe site or YouTube — we pull ingredients and steps automatically.")}
-    ${guide("Supports 400+ recipe sites, JSON-LD pages, WP Recipe Maker, and YouTube (transcript + description). Manual paste is only if everything else fails.")}
+    ${pageHeader("Import recipes", "Paste one or more links — we pull ingredients and steps automatically.")}
+    ${guide("Supports 400+ recipe sites, JSON-LD pages, WP Recipe Maker, and YouTube (transcript + description). Paste multiple URLs, one per line, to import your whole collection at once.")}
 
     <form id="url-form" class="panel">
-      <h2 class="panel-title">${icon("link")} From a URL</h2>
-      <p class="panel-help">Copy the full recipe page address from your browser's address bar.</p>
+      <h2 class="panel-title">${icon("link")} From URLs</h2>
+      <p class="panel-help">Copy recipe page addresses from your browser. One URL per line for bulk import.</p>
       <div class="field">
-        <label for="url-input">Recipe URL</label>
-        <input type="url" id="url-input" placeholder="https://www.example.com/your-recipe" required>
+        <label for="url-input">Recipe URL(s)</label>
+        <textarea id="url-input" rows="6" placeholder="https://www.example.com/recipe-one&#10;https://www.example.com/recipe-two" required></textarea>
+        <span class="field-hint">One URL per line — imported in order and saved automatically</span>
       </div>
-      <button type="submit" class="btn primary btn-lg">${icon("import")} Import from URL</button>
+      <button type="submit" class="btn primary btn-lg">${icon("import")} Import recipes</button>
     </form>
 
     <div id="import-status"></div>
@@ -467,36 +555,31 @@ function renderImport() {
   const manualDetails = document.getElementById("manual-details");
   const manualForm = document.getElementById("manual-form");
 
-  document.getElementById("url-form").addEventListener("submit", async (e) => {
+  const urlForm = document.getElementById("url-form");
+
+  urlForm.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const urls = parseImportUrls(document.getElementById("url-input").value);
+    if (!urls.length) return;
+
+    if (urls.length > 1) {
+      await bulkImportRecipes(urls, status, urlForm);
+      return;
+    }
+
     status.innerHTML = `<p class="status-msg">${icon("time")} Fetching and parsing recipe…</p>`;
-    let res = await fetch("/api/recipes/parse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ url: document.getElementById("url-input").value }),
-    });
-    if (res.status === 401) {
-      await promptSignIn();
-      res = await fetch("/api/recipes/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ url: document.getElementById("url-input").value }),
-      });
+    try {
+      draftRecipe = await parseRecipeUrl(urls[0]);
+      location.hash = "#/edit/new";
+    } catch (err) {
+      if (err.parseFailed) {
+        status.innerHTML = guide("We couldn't extract a recipe from that link. Try a direct recipe page URL, or expand manual paste below.");
+        manualDetails.classList.remove("hidden");
+        manualDetails.open = true;
+        return;
+      }
+      status.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
     }
-    if (res.status === 422) {
-      status.innerHTML = guide("We couldn't extract a recipe from that link. Try a direct recipe page URL, or expand manual paste below.");
-      manualDetails.classList.remove("hidden");
-      manualDetails.open = true;
-      return;
-    }
-    if (!res.ok) {
-      status.innerHTML = `<p class="error">${escapeHtml((await res.json()).detail || res.statusText)}</p>`;
-      return;
-    }
-    draftRecipe = await res.json();
-    location.hash = "#/edit/new";
   });
 
   manualForm.addEventListener("submit", async (e) => {
