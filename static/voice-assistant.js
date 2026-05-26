@@ -128,7 +128,65 @@ export class CookVoiceAssistant {
     this._audio = null;
     this._boundVoices = this._onVoicesChanged.bind(this);
     this._micStream = null;
+    this._hearCtx = null;
+    this._hearAnalyser = null;
+    this._hearRaf = null;
+    this._hearing = false;
+    this._hearLevel = 0;
     this._listenMs = () => Math.round((this.settings.listen_seconds ?? 3.2) * 1000);
+  }
+
+  _stopHearMonitor() {
+    if (this._hearRaf) {
+      cancelAnimationFrame(this._hearRaf);
+      this._hearRaf = null;
+    }
+    if (this._hearCtx) {
+      this._hearCtx.close().catch(() => {});
+      this._hearCtx = null;
+    }
+    this._hearAnalyser = null;
+    this._hearing = false;
+    this._hearLevel = 0;
+  }
+
+  async _startHearMonitor() {
+    this._stopHearMonitor();
+    if (!this._micStream) {
+      try {
+        await this._warmMic();
+      } catch {
+        return;
+      }
+    }
+    if (!this._micStream) return;
+
+    try {
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(this._micStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.65;
+      source.connect(analyser);
+      this._hearCtx = ctx;
+      this._hearAnalyser = analyser;
+      const bins = new Uint8Array(analyser.frequencyBinCount);
+
+      const tick = () => {
+        if (!this._listening) return;
+        analyser.getByteFrequencyData(bins);
+        let sum = 0;
+        for (let i = 0; i < bins.length; i++) sum += bins[i];
+        const level = Math.min(1, sum / bins.length / 72);
+        this._hearing = level > 0.07;
+        this._hearLevel = level;
+        this._emit();
+        this._hearRaf = requestAnimationFrame(tick);
+      };
+      this._hearRaf = requestAnimationFrame(tick);
+    } catch {
+      this._stopHearMonitor();
+    }
   }
 
   _commandCtx() {
@@ -234,6 +292,8 @@ export class CookVoiceAssistant {
       index: this.index,
       label,
       listening: this._listening,
+      hearing: this._hearing,
+      hearLevel: this._hearLevel,
       cloud: this.useCloudListen,
       ...extra,
     });
@@ -378,6 +438,8 @@ export class CookVoiceAssistant {
       }
     }
     this._listening = false;
+    this._stopHearMonitor();
+    this._emit();
   }
 
   _recorderMime() {
@@ -391,6 +453,7 @@ export class CookVoiceAssistant {
     if (!this.active || this.paused) return "";
     this._listening = true;
     this._emit({ message: "Listening…" });
+    await this._startHearMonitor();
     try {
       if (!this._micStream) await this._warmMic();
       if (!this._micStream) return "";
@@ -431,6 +494,7 @@ export class CookVoiceAssistant {
       return "";
     } finally {
       this._listening = false;
+      this._stopHearMonitor();
       this._emit();
     }
   }
@@ -453,6 +517,7 @@ export class CookVoiceAssistant {
         if (settled) return;
         settled = true;
         this._listening = false;
+        this._stopHearMonitor();
         this._emit();
         resolve(text);
       };
@@ -471,6 +536,7 @@ export class CookVoiceAssistant {
 
       this._listening = true;
       this._emit({ message: "Listening…" });
+      this._startHearMonitor();
       try {
         rec.start();
       } catch {

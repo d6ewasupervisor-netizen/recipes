@@ -1100,6 +1100,40 @@ main {
   color: var(--accent);
   animation: voice-pulse 1.2s ease-in-out infinite;
 }
+
+/* Live “hearing you” meter beside mic */
+.voice-hear-glyph {
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex-shrink: 0;
+}
+.voice-hear-glyph[hidden] { display: none !important; }
+.voice-hear-glyph .hear-bar {
+  display: block;
+  width: 3px;
+  min-height: 0.2rem;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.45);
+  transition: height 0.06s ease-out, background 0.12s ease;
+}
+.voice-hear-glyph.hearing-wait .hear-bar {
+  animation: hear-idle 1s ease-in-out infinite;
+}
+.voice-hear-glyph.hearing-wait .hear-bar:nth-child(2) { animation-delay: 0.12s; }
+.voice-hear-glyph.hearing-wait .hear-bar:nth-child(3) { animation-delay: 0.24s; }
+.voice-hear-glyph.hearing-wait .hear-bar:nth-child(4) { animation-delay: 0.36s; }
+.voice-hear-glyph.hearing-voice .hear-bar {
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.55);
+}
+@keyframes hear-idle {
+  0%, 100% { transform: scaleY(0.45); opacity: 0.55; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
 .voice-toolbar .sr-only {
   position: absolute;
   width: 1px;

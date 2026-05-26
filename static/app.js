@@ -25,7 +25,7 @@ let wakeLock = null;
 let draftRecipe = null;
 let cookState = { servings: 4, unitSystem: "imperial", wakeLockOn: false, showImages: false };
 let cookAssistant = null;
-let voiceUi = { active: false, label: "", message: "", listening: false };
+let voiceUi = { active: false, label: "", message: "", listening: false, hearing: false, hearLevel: 0 };
 let voiceBackend = { enabled: false };
 let voiceSettings = { ...DEFAULT_VOICE_SETTINGS };
 let pendingEditImage = null;
@@ -891,7 +891,7 @@ function stopCookAssistant() {
     cookAssistant.stop();
     cookAssistant = null;
   }
-  voiceUi = { active: false, label: "", message: "", listening: false };
+  voiceUi = { active: false, label: "", message: "", listening: false, hearing: false, hearLevel: 0 };
   document.body.classList.remove("cook-mode");
 }
 
@@ -959,6 +959,9 @@ function mountCookHeader({ voiceSupported }) {
     <div id="voice-dock" class="voice-toolbar no-print" aria-live="polite">
       <p id="voice-status" class="sr-only">Tap microphone to start</p>
       <button type="button" id="voice-back" class="dock-btn" aria-label="Previous" disabled>${icon("remove")}</button>
+      <span id="voice-hear-glyph" class="voice-hear-glyph" hidden aria-hidden="true" title="Listening">
+        <span class="hear-bar"></span><span class="hear-bar"></span><span class="hear-bar"></span><span class="hear-bar"></span>
+      </span>
       <button type="button" id="voice-listen" class="dock-btn voice-mic-btn" aria-label="Start voice assistant">${icon("mic")}</button>
       <button type="button" id="voice-next" class="dock-btn" aria-label="Next" disabled>${icon("add")}</button>
     </div>`;
@@ -990,8 +993,25 @@ function updateVoicePanel() {
     listenBtn.classList.toggle("listening", voiceUi.listening);
     listenBtn.setAttribute(
       "aria-label",
-      voiceUi.active ? (voiceUi.listening ? "Listening…" : "Speak now") : "Start voice assistant"
+      voiceUi.active
+        ? voiceUi.hearing
+          ? "Hearing you…"
+          : voiceUi.listening
+            ? "Listening…"
+            : "Speak now"
+        : "Start voice assistant"
     );
+  }
+  const hearGlyph = document.getElementById("voice-hear-glyph");
+  if (hearGlyph) {
+    const showHear = voiceUi.active && voiceUi.listening && !voiceUi.paused;
+    hearGlyph.hidden = !showHear;
+    hearGlyph.classList.toggle("hearing-voice", showHear && voiceUi.hearing);
+    hearGlyph.classList.toggle("hearing-wait", showHear && !voiceUi.hearing);
+    hearGlyph.querySelectorAll(".hear-bar").forEach((bar, i) => {
+      const scale = voiceUi.hearing ? 0.35 + voiceUi.hearLevel * (0.55 + (i % 3) * 0.12) : 0.3;
+      bar.style.height = `${scale}rem`;
+    });
   }
   if (stopMenu) stopMenu.hidden = !voiceUi.active;
 }
@@ -1250,13 +1270,15 @@ async function renderCook(id) {
       },
       onHighlight: applyVoiceHighlight,
       onStatus: (s) => {
-        voiceUi = {
-          active: s.active,
-          paused: !!s.paused,
-          label: s.label || "",
-          message: s.message || (s.listening ? "Listening…" : ""),
-          listening: !!s.listening,
-        };
+          voiceUi = {
+            active: s.active,
+            paused: !!s.paused,
+            label: s.label || "",
+            message: s.message || (s.listening ? "Listening…" : ""),
+            listening: !!s.listening,
+            hearing: !!s.hearing,
+            hearLevel: s.hearLevel ?? 0,
+          };
         updateVoicePanel();
         if (!s.active) cookAssistant = null;
       },
