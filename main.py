@@ -249,6 +249,11 @@ def delete_recipe(recipe_id: int, _auth: WriteAuth) -> DeleteResponse:
     return DeleteResponse()
 
 
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.get("/data/densities.json")
 def get_densities():
     return FileResponse(BASE_DIR / "data" / "densities.json", media_type="application/json")
