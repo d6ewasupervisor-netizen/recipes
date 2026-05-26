@@ -133,7 +133,42 @@ export class CookVoiceAssistant {
     this._hearRaf = null;
     this._hearing = false;
     this._hearLevel = 0;
+    this._listenAbort = false;
+    this._mediaRecorder = null;
+    this._recordTimer = null;
+    this._loopRunning = false;
+    this._lastHearEmit = 0;
     this._listenMs = () => Math.round((this.settings.listen_seconds ?? 3.2) * 1000);
+  }
+
+  _abortActiveListen() {
+    this._listenAbort = true;
+    if (this._recordTimer) {
+      clearTimeout(this._recordTimer);
+      this._recordTimer = null;
+    }
+    if (this._mediaRecorder) {
+      try {
+        if (this._mediaRecorder.state === "recording") this._mediaRecorder.stop();
+      } catch {
+        /* ignore */
+      }
+      this._mediaRecorder = null;
+    }
+    if (this._recognition) {
+      try {
+        this._recognition.abort();
+      } catch {
+        /* ignore */
+      }
+      this._recognition = null;
+    }
+    this._listening = false;
+    this._stopHearMonitor();
+  }
+
+  _pausedListenDelay() {
+    return new Promise((r) => setTimeout(r, 450));
   }
 
   _stopHearMonitor() {
@@ -180,7 +215,11 @@ export class CookVoiceAssistant {
         const level = Math.min(1, sum / bins.length / 72);
         this._hearing = level > 0.07;
         this._hearLevel = level;
-        this._emit();
+        const now = Date.now();
+        if (now - this._lastHearEmit > 80) {
+          this._lastHearEmit = now;
+          this._emit();
+        }
         this._hearRaf = requestAnimationFrame(tick);
       };
       this._hearRaf = requestAnimationFrame(tick);
@@ -219,7 +258,7 @@ export class CookVoiceAssistant {
 
   async tapListen() {
     if (!this.active) return;
-    const transcript = await this.listen();
+    const transcript = await this.listen({ forResume: this.paused });
     if (transcript) await this._handleCommand(transcript);
     else if (this.paused) this._emit({ message: "Paused — say when you're back" });
   }
@@ -333,12 +372,15 @@ export class CookVoiceAssistant {
       this._controlsExplained = true;
     }
     await this._presentCurrent();
+    if (this.active && !this.settings.push_to_talk) {
+      await this._loopListen();
+    }
   }
 
   stop() {
     this.active = false;
     this.paused = false;
-    this._stopListening();
+    this._abortActiveListen();
     this._releaseMic();
     speechSynthesis.cancel();
     if (this._audio) {
@@ -358,7 +400,7 @@ export class CookVoiceAssistant {
   async speak(text) {
     if (!text?.trim()) return;
     const spoken = normalizeForSpeech(text);
-    this._stopListening();
+    this._abortActiveListen();
     speechSynthesis.cancel();
     if (this._audio) {
       this._audio.pause();
@@ -430,15 +472,8 @@ export class CookVoiceAssistant {
   }
 
   _stopListening() {
-    if (this._recognition) {
-      try {
-        this._recognition.abort();
-      } catch {
-        /* ignore */
-      }
-    }
-    this._listening = false;
-    this._stopHearMonitor();
+    this._abortActiveListen();
+    this._listenAbort = false;
     this._emit();
   }
 
@@ -449,17 +484,24 @@ export class CookVoiceAssistant {
     return "";
   }
 
-  async _listenCloud(maxMs = this._listenMs()) {
-    if (!this.active || this.paused) return "";
+  async _listenCloud(maxMs = this._listenMs(), { forResume = false } = {}) {
+    if (!this.active) return "";
+    if (this.paused && !forResume) {
+      await this._pausedListenDelay();
+      return "";
+    }
+    this._listenAbort = false;
     this._listening = true;
-    this._emit({ message: "Listening…" });
-    await this._startHearMonitor();
+    this._emit({
+      message: forResume ? "Paused — say when you're back" : "Listening…",
+    });
     try {
       if (!this._micStream) await this._warmMic();
-      if (!this._micStream) return "";
+      if (!this._micStream || this._listenAbort) return "";
 
       const mime = this._recorderMime();
       const recorder = new MediaRecorder(this._micStream, mime ? { mimeType: mime } : undefined);
+      this._mediaRecorder = recorder;
       const chunks = [];
       recorder.ondataavailable = (e) => {
         if (e.data.size) chunks.push(e.data);
@@ -467,16 +509,22 @@ export class CookVoiceAssistant {
 
       const blob = await new Promise((resolve, reject) => {
         recorder.onstop = () => {
+          this._mediaRecorder = null;
           resolve(new Blob(chunks, { type: recorder.mimeType || mime || "audio/webm" }));
         };
         recorder.onerror = () => reject(new Error("record failed"));
-        recorder.start();
-        setTimeout(() => {
+        try {
+          recorder.start();
+        } catch (err) {
+          reject(err);
+          return;
+        }
+        this._recordTimer = setTimeout(() => {
           if (recorder.state === "recording") recorder.stop();
         }, maxMs);
       });
 
-      if (!blob.size) return "";
+      if (this._listenAbort || !blob.size) return "";
 
       const ext = (recorder.mimeType || mime).includes("mp4") ? "audio.mp4" : "audio.webm";
       const form = new FormData();
@@ -487,22 +535,30 @@ export class CookVoiceAssistant {
         body: form,
         credentials: "include",
       });
-      if (!res.ok) return "";
+      if (!res.ok || this._listenAbort) return "";
       const data = await res.json();
       return normalize(data.transcript || "");
     } catch {
       return "";
     } finally {
+      if (this._recordTimer) {
+        clearTimeout(this._recordTimer);
+        this._recordTimer = null;
+      }
+      this._mediaRecorder = null;
       this._listening = false;
-      this._stopHearMonitor();
       this._emit();
     }
   }
 
-  _listenBrowser() {
+  _listenBrowser({ forResume = false } = {}) {
     return new Promise((resolve) => {
-      if (!this.active || this.paused || !SpeechRecognition) {
+      if (!this.active || !SpeechRecognition) {
         resolve("");
+        return;
+      }
+      if (this.paused && !forResume) {
+        this._pausedListenDelay().then(() => resolve(""));
         return;
       }
       const rec = new SpeechRecognition();
@@ -534,8 +590,11 @@ export class CookVoiceAssistant {
         if (!settled) finish("");
       };
 
+      this._listenAbort = false;
       this._listening = true;
-      this._emit({ message: "Listening…" });
+      this._emit({
+        message: forResume ? "Paused — say when you're back" : "Listening…",
+      });
       this._startHearMonitor();
       try {
         rec.start();
@@ -545,9 +604,9 @@ export class CookVoiceAssistant {
     });
   }
 
-  listen() {
-    if (this.useCloudListen) return this._listenCloud();
-    return this._listenBrowser();
+  listen(opts = {}) {
+    if (this.useCloudListen) return this._listenCloud(this._listenMs(), opts);
+    return this._listenBrowser(opts);
   }
 
   async _interpretCloud(transcript) {
@@ -747,7 +806,7 @@ export class CookVoiceAssistant {
 
   async _enterPause(speech) {
     this.paused = true;
-    this._stopListening();
+    this._abortActiveListen();
     speechSynthesis.cancel();
     if (this._audio) {
       this._audio.pause();
@@ -761,35 +820,96 @@ export class CookVoiceAssistant {
   async _exitPause(speech) {
     if (!this.paused) return "resume";
     this.paused = false;
+    this._listenAbort = false;
     this._emit();
-    if (speech?.trim()) await this.speak(speech);
-    await this._presentCurrent(false);
+    try {
+      if (speech?.trim()) await this.speak(speech);
+      if (this.active) await this._speakCurrentItem(false);
+    } catch {
+      /* keep loop alive after audio errors */
+    }
     return "resume";
   }
 
-  async _loopListen() {
-    if (this.settings.push_to_talk) return;
-    while (this.active) {
-      const transcript = await this.listen();
-      if (!this.active) break;
-      if (!transcript) {
-        if (this.paused) this._emit({ message: "Paused — say when you're back" });
-        continue;
+  async _speakCurrentItem(intro = true) {
+    if (!this.active || this.paused) return;
+    const ings = this.visibleIngredients;
+    const steps = this.instructions;
+    const suffix = this._promptSuffix();
+
+    if (this.phase === "ingredients") {
+      if (!ings.length) {
+        this.phase = "steps";
+        this.index = 0;
+        return this._speakCurrentItem(intro);
       }
-      if (this.paused) {
-        if (isResumePhrase(transcript) || /\b(help|stop|quit)\b/.test(transcript)) {
+      if (this.index >= ings.length) {
+        const msg =
+          this._verbosity() === "minimal"
+            ? "Ingredients done."
+            : "That's all the ingredients. Say next for step one.";
+        await this.speak(msg);
+        this.phase = "steps";
+        this.index = 0;
+        this.onHighlight({ phase: "steps", index: 0 });
+        this._emit();
+        return;
+      }
+      const ing = ings[this.index];
+      this.onHighlight({ phase: "ingredients", index: this.index });
+      this._emit();
+      const announce = intro && this._verbosity() !== "minimal";
+      await this.speak(this._ingredientLine(ing, this.index + 1, ings.length, announce) + suffix);
+      return;
+    }
+
+    if (this.index >= steps.length) {
+      await this.speak(`You're done. Enjoy your ${this.recipe.title}.`);
+      this.stop();
+      return;
+    }
+    const step = steps[this.index];
+    this.onHighlight({ phase: "steps", index: this.index });
+    this._emit();
+    const announce = intro && this._verbosity() !== "minimal";
+    await this.speak(this._stepLine(step, this.index + 1, steps.length, announce) + suffix);
+  }
+
+  async _loopListen() {
+    if (this.settings.push_to_talk || this._loopRunning) return;
+    this._loopRunning = true;
+    try {
+      while (this.active) {
+        const transcript = await this.listen({ forResume: this.paused });
+        if (!this.active) break;
+        if (!transcript) {
+          if (this.paused) this._emit({ message: "Paused — say when you're back" });
+          continue;
+        }
+        if (this.paused) {
+          if (isResumePhrase(transcript) || /\b(help|stop|quit)\b/.test(transcript)) {
+            try {
+              const handled = await this._handleCommand(transcript);
+              if (handled === "stop") break;
+            } catch {
+              /* don't break the listen loop on command errors */
+            }
+          }
+          continue;
+        }
+        try {
           const handled = await this._handleCommand(transcript);
           if (handled === "stop") break;
-          if (handled === "resume") continue;
+          if (handled === "pause") continue;
+          if (!handled && this._verbosity() !== "minimal") {
+            await this.speak("Say next, repeat, or help.");
+          }
+        } catch {
+          /* keep listening after unexpected errors */
         }
-        continue;
       }
-      const handled = await this._handleCommand(transcript);
-      if (handled === "stop") break;
-      if (handled === "pause") continue;
-      if (!handled && this._verbosity() !== "minimal") {
-        await this.speak("Say next, repeat, or help.");
-      }
+    } finally {
+      this._loopRunning = false;
     }
   }
 
@@ -815,7 +935,7 @@ export class CookVoiceAssistant {
         this.index = 0;
         this.onHighlight({ phase: "steps", index: 0 });
         this._emit();
-        return this._loopListen();
+        return;
       }
       const ing = ings[this.index];
       this.onHighlight({ phase: "ingredients", index: this.index });
@@ -824,7 +944,7 @@ export class CookVoiceAssistant {
       const line =
         this._ingredientLine(ing, this.index + 1, ings.length, announce) + suffix;
       await this.speak(line);
-      return this._loopListen();
+      return;
     }
 
     if (this.index >= steps.length) {
@@ -838,7 +958,6 @@ export class CookVoiceAssistant {
     const announce = intro && this._verbosity() !== "minimal";
     const line = this._stepLine(step, this.index + 1, steps.length, announce) + suffix;
     await this.speak(line);
-    return this._loopListen();
   }
 
   async _handleCommand(transcript) {
