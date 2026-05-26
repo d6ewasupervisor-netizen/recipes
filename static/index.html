@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#143036">
+  <meta name="description" content="Import, scale, convert, and cook your recipes.">
+  <title>Recipes</title>
+  <link rel="icon" href="/icon-launcher.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-launcher.svg">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="site-header no-print">
+    <a href="#/" class="logo">
+      <img src="/icon-launcher.svg" alt="" class="logo-mark" width="36" height="36">
+      <span>Recipes</span>
+    </a>
+    <nav id="main-nav" aria-label="Main"></nav>
+  </header>
+
+  <main id="app"></main>
+
+  <dialog id="passphrase-dialog" aria-labelledby="passphrase-title">
+    <form method="dialog" id="passphrase-form">
+      <div class="dialog-icon" aria-hidden="true"></div>
+      <h2 id="passphrase-title">Passphrase required</h2>
+      <p class="guide-text">Saving and importing recipes needs the shared app passphrase.</p>
+      <label for="passphrase-input">Passphrase</label>
+      <input type="password" id="passphrase-input" autocomplete="current-password" required>
+      <div class="dialog-actions">
+        <button type="submit" class="btn primary">Continue</button>
+        <button type="button" id="passphrase-cancel" class="btn ghost">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js");
+    }
+  </script>
+</body>
+</html>

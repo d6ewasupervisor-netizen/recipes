@@ -1,0 +1,19 @@
+{
+  "name": "Recipes",
+  "short_name": "Recipes",
+  "description": "April's recipe box — import, scale, convert, and cook.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5efe1",
+  "theme_color": "#143036",
+  "icons": [
+    {
+      "src": "/icon-launcher.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
