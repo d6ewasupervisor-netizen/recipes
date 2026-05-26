@@ -1,9 +1,12 @@
-const CACHE = "recipes-v4";
+const CACHE = "recipes-v11";
 const SHELL = [
   "/",
   "/index.html",
   "/app.js",
   "/convert.js",
+  "/cook-commands.js",
+  "/speech-speak.js",
+  "/voice-pause-phrases.js",
   "/voice-assistant.js",
   "/style.css",
   "/manifest.json",

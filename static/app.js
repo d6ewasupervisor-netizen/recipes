@@ -4,7 +4,14 @@ import {
   convertIngredient,
   convertInstructionText,
 } from "./convert.js";
-import { CookVoiceAssistant, voiceAssistantSupported } from "./voice-assistant.js";
+import {
+  CookVoiceAssistant,
+  DEFAULT_VOICE_SETTINGS,
+  fetchVoiceBackend,
+  fetchVoiceSettings,
+  saveVoiceSettings,
+  voiceAssistantSupported,
+} from "./voice-assistant.js";
 
 const app = document.getElementById("app");
 const nav = document.getElementById("main-nav");
@@ -19,6 +26,8 @@ let draftRecipe = null;
 let cookState = { servings: 4, unitSystem: "imperial", wakeLockOn: false, showImages: false };
 let cookAssistant = null;
 let voiceUi = { active: false, label: "", message: "", listening: false };
+let voiceBackend = { enabled: false };
+let voiceSettings = { ...DEFAULT_VOICE_SETTINGS };
 
 function escapeHtml(s) {
   return String(s)
@@ -648,25 +657,129 @@ function stopCookAssistant() {
     cookAssistant = null;
   }
   voiceUi = { active: false, label: "", message: "", listening: false };
+  document.body.classList.remove("cook-voice-active");
+  document.body.classList.remove("cook-mode");
 }
 
 function updateVoicePanel() {
-  const panel = document.getElementById("voice-panel");
-  if (!panel) return;
-  panel.classList.toggle("voice-active", voiceUi.active);
-  panel.classList.toggle("voice-listening", voiceUi.listening);
+  const dock = document.getElementById("voice-dock");
+  if (!dock) return;
+  document.body.classList.toggle("cook-voice-active", voiceUi.active);
+  dock.classList.toggle("voice-active", voiceUi.active);
+  dock.classList.toggle("voice-paused", voiceUi.paused);
+  dock.classList.toggle("voice-listening", voiceUi.listening && !voiceUi.paused);
   const status = document.getElementById("voice-status");
   const label = document.getElementById("voice-label");
   const btn = document.getElementById("voice-toggle");
-  if (status) status.textContent = voiceUi.message || (voiceUi.active ? voiceUi.label : "Hands-free guidance");
-  if (label) label.textContent = voiceUi.active ? voiceUi.label : "";
+  const controls = document.getElementById("voice-dock-controls");
+  if (status) {
+    status.textContent =
+      voiceUi.message ||
+      (voiceUi.paused
+        ? "Paused — say I'm back or let's go"
+        : voiceUi.active
+          ? voiceUi.label || "Listening…"
+          : "Tap to cook hands-free");
+  }
+  if (label) label.textContent = voiceUi.active && voiceUi.label ? voiceUi.label : "";
+  if (controls) controls.hidden = !voiceUi.active;
   if (btn) {
+    btn.classList.toggle("danger-soft", voiceUi.active);
     btn.classList.toggle("primary", !voiceUi.active);
     btn.innerHTML = voiceUi.active
-      ? `${icon("mic")} Stop assistant`
-      : `${icon("mic")} Start voice assistant`;
+      ? `${icon("mic")} Stop`
+      : `${icon("mic")} Start voice`;
+  }
+  const listenBtn = document.getElementById("voice-listen");
+  if (listenBtn) listenBtn.classList.toggle("listening", voiceUi.listening);
+}
+
+function voiceSettingsDialogHtml() {
+  const v = voiceSettings;
+  const voices = ["alloy", "ash", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer"];
+  const voiceOpts = voices
+    .map((name) => `<option value="${name}"${v.tts_voice === name ? " selected" : ""}>${name}</option>`)
+    .join("");
+  return `
+    <label>Voice <select id="vs-voice">${voiceOpts}</select></label>
+    <label>Quality <select id="vs-model">
+      <option value="tts-1-hd"${v.tts_model === "tts-1-hd" ? " selected" : ""}>HD (best sound)</option>
+      <option value="tts-1"${v.tts_model === "tts-1" ? " selected" : ""}>Standard (faster)</option>
+    </select></label>
+    <label>Style <select id="vs-verbosity">
+      <option value="minimal"${v.verbosity === "minimal" ? " selected" : ""}>Minimal</option>
+      <option value="normal"${v.verbosity === "normal" ? " selected" : ""}>Normal</option>
+      <option value="chatty"${v.verbosity === "chatty" ? " selected" : ""}>Chatty</option>
+    </select></label>
+    <label>Listen window <select id="vs-listen">
+      <option value="2.5"${v.listen_seconds === 2.5 ? " selected" : ""}>Short (2.5s)</option>
+      <option value="3.2"${v.listen_seconds === 3.2 || !v.listen_seconds ? " selected" : ""}>Normal (3.2s)</option>
+      <option value="4.5"${v.listen_seconds === 4.5 ? " selected" : ""}>Long (4.5s)</option>
+    </select></label>
+    <label class="toggle-row full-width">
+      <input type="checkbox" id="vs-ptt" ${v.push_to_talk ? "checked" : ""}>
+      <span>Push-to-talk (tap mic; no auto-listen)</span>
+    </label>
+    <label>Nickname <input type="text" id="vs-name" placeholder="Optional" value="${escapeHtml(v.assistant_name || "")}"></label>
+    <label class="full-width">Personality <textarea id="vs-personality" rows="3">${escapeHtml(v.personality || "")}</textarea></label>
+    <label class="full-width">Custom commands <span class="field-hint">phrase = action per line</span>
+      <textarea id="vs-custom" rows="4" placeholder="yep = next">${escapeHtml(formatCustomCommands(v.custom_commands))}</textarea>
+    </label>`;
+}
+
+function openVoiceSettingsDialog() {
+  const dlg = document.getElementById("voice-settings-dialog");
+  const fields = document.getElementById("vs-dialog-fields");
+  if (!dlg || !fields) return;
+  fields.innerHTML = voiceSettingsDialogHtml();
+  dlg.showModal();
+}
+
+async function saveVoiceSettingsFromDialog() {
+  const settings = {
+    ...voiceSettings,
+    tts_voice: document.getElementById("vs-voice")?.value || "nova",
+    tts_model: document.getElementById("vs-model")?.value || "tts-1",
+    use_cloud_tts: true,
+    verbosity: document.getElementById("vs-verbosity")?.value || "minimal",
+    listen_seconds: parseFloat(document.getElementById("vs-listen")?.value || "3.2"),
+    push_to_talk: !!document.getElementById("vs-ptt")?.checked,
+    prompt_once: true,
+    assistant_name: document.getElementById("vs-name")?.value?.trim() || "",
+    personality:
+      document.getElementById("vs-personality")?.value?.trim() ||
+      DEFAULT_VOICE_SETTINGS.personality,
+    custom_commands: parseCustomCommands(document.getElementById("vs-custom")?.value || ""),
+  };
+  voiceSettings = await saveVoiceSettings(settings);
+  if (cookAssistant) {
+    cookAssistant.settings = { ...voiceSettings };
+    cookAssistant.useCloudTts = voiceBackend.enabled && voiceSettings.use_cloud_tts;
   }
 }
+
+function formatCustomCommands(commands) {
+  if (!commands?.length) return "";
+  return commands
+    .map((c) => {
+      const phrase = (c.phrases || []).join(" | ");
+      return `${phrase} = ${c.action || "next"}`;
+    })
+    .join("\n");
+}
+
+function parseCustomCommands(text) {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const cmds = [];
+  for (const line of lines) {
+    const m = line.match(/^(.+?)\s*=\s*(\w+)(?:\s*:\s*(.+))?$/);
+    if (!m) continue;
+    const phrases = m[1].split("|").map((p) => p.trim()).filter(Boolean);
+    cmds.push({ phrases, action: m[2], speech: m[3]?.trim() || "" });
+  }
+  return cmds;
+}
+
 
 function applyVoiceHighlight(highlight) {
   document.querySelectorAll(".voice-current").forEach((el) => el.classList.remove("voice-current"));
@@ -684,6 +797,7 @@ function applyVoiceHighlight(highlight) {
 
 async function renderCook(id) {
   stopCookAssistant();
+  document.body.classList.add("cook-mode");
 
   setNav([
     { href: "#/", label: "Recipes", icon: "bookmark" },
@@ -695,69 +809,65 @@ async function renderCook(id) {
   cookState.unitSystem = recipe.unit_system || "imperial";
 
   const wakeSupported = "wakeLock" in navigator;
-  const voiceSupported = voiceAssistantSupported();
+  voiceBackend = await fetchVoiceBackend();
+  if (voiceBackend.enabled) voiceSettings = await fetchVoiceSettings();
+  const voiceSupported = voiceAssistantSupported(voiceBackend);
+  const voiceHint = voiceBackend.enabled
+    ? "Say <strong>hold on</strong> to pause, <strong>I'm back</strong> to resume. <strong>Next</strong> to advance."
+    : "Add <code>OPENAI_API_KEY</code> on the server for iPhone. Say <strong>next</strong> to advance.";
+  const voiceOptions = voiceBackend.enabled
+    ? `<option value="alloy"${voiceSettings.tts_voice === "alloy" ? " selected" : ""}>Alloy</option>
+         <option value="ash"${voiceSettings.tts_voice === "ash" ? " selected" : ""}>Ash</option>
+         <option value="coral"${voiceSettings.tts_voice === "coral" ? " selected" : ""}>Coral</option>
+         <option value="echo"${voiceSettings.tts_voice === "echo" ? " selected" : ""}>Echo</option>
+         <option value="fable"${voiceSettings.tts_voice === "fable" ? " selected" : ""}>Fable</option>
+         <option value="onyx"${voiceSettings.tts_voice === "onyx" ? " selected" : ""}>Onyx</option>
+         <option value="nova"${voiceSettings.tts_voice === "nova" ? " selected" : ""}>Nova</option>
+         <option value="sage"${voiceSettings.tts_voice === "sage" ? " selected" : ""}>Sage</option>
+         <option value="shimmer"${voiceSettings.tts_voice === "shimmer" ? " selected" : ""}>Shimmer</option>`
+    : "";
 
   app.innerHTML = `<div class="view cook-view">
-    ${pageHeader("Cook mode", "Big text, live scaling, and unit conversion — designed for your phone at the stove.")}
+    <article id="cook-content" class="cook-content"></article>
 
-    <div class="cook-toolbar no-print">
-      <div class="control-card">
-        <div class="control-label">${icon("servings")} Servings</div>
-        <div class="control-value">
-          <button type="button" id="servings-down" class="stepper" aria-label="Fewer servings">${icon("remove")}</button>
-          <span id="servings-val" aria-live="polite">${cookState.servings}</span>
-          <button type="button" id="servings-up" class="stepper" aria-label="More servings">${icon("add")}</button>
-        </div>
+    <div class="cook-quick-bar no-print" aria-label="Cook controls">
+      <div class="quick-chip servings-chip">
+        <button type="button" id="servings-down" class="icon-btn" aria-label="Fewer servings">${icon("remove")}</button>
+        <span id="servings-val" aria-live="polite">${cookState.servings}</span>
+        <button type="button" id="servings-up" class="icon-btn" aria-label="More servings">${icon("add")}</button>
+        <span class="chip-label">servings</span>
       </div>
-
-      <div class="control-card">
-        <div class="control-label">${icon("units")} Units</div>
-        <button type="button" id="unit-toggle" class="btn toggle-btn" aria-label="Toggle unit system">${cookState.unitSystem}</button>
-      </div>
-
+      <button type="button" id="unit-toggle" class="quick-chip btn-chip" aria-label="Toggle units">${icon("units")} <span id="unit-chip-label">${cookState.unitSystem}</span></button>
       ${
         wakeSupported
-          ? `<div class="control-card">
-        <div class="control-label">${icon("wakelock")} Screen</div>
-        <label class="toggle-row">
-          <input type="checkbox" id="wake-lock">
-          <span>Stay awake</span>
-        </label>
-      </div>`
+          ? `<label class="quick-chip btn-chip toggle-chip"><input type="checkbox" id="wake-lock"> ${icon("wakelock")} Awake</label>`
           : ""
       }
-
-      <div class="control-card">
-        <div class="control-label">${icon("print")} Print</div>
-        <label class="toggle-row">
-          <input type="checkbox" id="print-images">
-          <span>Photos</span>
-        </label>
-        <button type="button" id="print-btn" class="btn primary btn-block" style="margin-top:0.5rem">${icon("print")} Print</button>
-      </div>
-
+      <button type="button" id="print-btn" class="quick-chip btn-chip" aria-label="Print">${icon("print")} Print</button>
       ${
-        voiceSupported
-          ? `<div class="control-card voice-control-card">
-        <div class="control-label">${icon("mic")} Voice</div>
-        <button type="button" id="voice-toggle" class="btn btn-block">${icon("mic")} Start voice assistant</button>
-      </div>`
+        voiceBackend.enabled
+          ? `<button type="button" id="voice-settings-open" class="quick-chip btn-chip" aria-label="Voice settings">${icon("settings")}</button>`
           : ""
       }
     </div>
 
     ${
       voiceSupported
-        ? `<section id="voice-panel" class="voice-panel no-print" aria-live="polite">
-      <p id="voice-status" class="voice-status">Hands-free guidance</p>
-      <p id="voice-label" class="voice-label"></p>
-      <p class="voice-hint">Say <strong>next</strong> to advance, or ask e.g. “how much sugar?” “oven temperature?” “double the recipe.”</p>
-    </section>`
-        : `<p class="voice-unsupported no-print">Voice assistant needs Chrome or Edge on this device (microphone + speech).</p>`
+        ? `<footer id="voice-dock" class="voice-dock no-print" aria-live="polite">
+      <div class="voice-dock-top">
+        <p id="voice-status" class="voice-status">Tap to cook hands-free</p>
+        <p id="voice-label" class="voice-label"></p>
+      </div>
+      <div id="voice-dock-controls" class="voice-dock-controls" hidden>
+        <button type="button" id="voice-back" class="dock-btn" aria-label="Previous">${icon("remove")}</button>
+        <button type="button" id="voice-listen" class="dock-btn voice-mic-btn" aria-label="Speak now">${icon("mic")}</button>
+        <button type="button" id="voice-next" class="dock-btn" aria-label="Next">${icon("add")}</button>
+      </div>
+      <button type="button" id="voice-toggle" class="btn primary btn-block voice-start-btn">${icon("mic")} Start voice</button>
+      <p class="voice-hint">${voiceHint}</p>
+    </footer>`
+        : `<p class="voice-unsupported no-print">Voice needs a microphone and <code>OPENAI_API_KEY</code> on the server.</p>`
     }
-
-    <article id="cook-content" class="cook-content"></article>
-    <div class="no-print">${guide(voiceSupported ? "Voice assistant reads ingredients and steps aloud. Metric mode converts volumes to grams for common ingredients." : "Metric mode converts volumes to grams for common ingredients (e.g. 1 cup flour ≈ 120 g). Temperatures in steps convert too.")}</div>
   </div>`;
 
   function drawCook() {
@@ -802,7 +912,10 @@ async function renderCook(id) {
       <footer class="print-footer">${recipe.source_url ? `<p>Source: ${escapeHtml(recipe.source_url)}</p>` : ""}</footer>
     `;
     document.getElementById("servings-val").textContent = cookState.servings;
-    document.getElementById("unit-toggle").textContent = cookState.unitSystem;
+    const unitChip = document.getElementById("unit-chip-label");
+    if (unitChip) unitChip.textContent = cookState.unitSystem;
+    const unitBtn = document.getElementById("unit-toggle");
+    if (unitBtn && !unitChip) unitBtn.textContent = cookState.unitSystem;
     if (cookAssistant) {
       applyVoiceHighlight(
         cookAssistant.active
@@ -832,9 +945,18 @@ async function renderCook(id) {
     document.body.classList.toggle("print-images", cookState.showImages);
     window.print();
   });
-  document.getElementById("print-images")?.addEventListener("change", (e) => {
-    cookState.showImages = e.target.checked;
-    drawCook();
+  document.getElementById("voice-settings-open")?.addEventListener("click", openVoiceSettingsDialog);
+  document.getElementById("vs-dialog-cancel")?.addEventListener("click", () => {
+    document.getElementById("voice-settings-dialog")?.close();
+  });
+  document.getElementById("voice-settings-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await saveVoiceSettingsFromDialog();
+      document.getElementById("voice-settings-dialog")?.close();
+    } catch (err) {
+      alert(err.message);
+    }
   });
 
   const voiceBtn = document.getElementById("voice-toggle");
@@ -855,6 +977,8 @@ async function renderCook(id) {
       }
       cookAssistant = new CookVoiceAssistant({
         recipe,
+        backend: voiceBackend,
+        settings: voiceSettings,
         getCookState: () => cookState,
         setServings: (n) => {
           cookState.servings = n;
@@ -864,10 +988,15 @@ async function renderCook(id) {
           cookState.unitSystem = s;
           drawCook();
         },
+        onPrint: () => {
+          document.body.classList.toggle("print-images", cookState.showImages);
+          window.print();
+        },
         onHighlight: applyVoiceHighlight,
         onStatus: (s) => {
           voiceUi = {
             active: s.active,
+            paused: !!s.paused,
             label: s.label || "",
             message: s.message || (s.listening ? "Listening…" : ""),
             listening: !!s.listening,
@@ -882,6 +1011,10 @@ async function renderCook(id) {
     });
     updateVoicePanel();
   }
+
+  document.getElementById("voice-next")?.addEventListener("click", () => cookAssistant?.tapNext());
+  document.getElementById("voice-back")?.addEventListener("click", () => cookAssistant?.tapBack());
+  document.getElementById("voice-listen")?.addEventListener("click", () => cookAssistant?.tapListen());
 
   const wakeCheckbox = document.getElementById("wake-lock");
   if (wakeCheckbox) {

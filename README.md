@@ -40,6 +40,9 @@ Open http://127.0.0.1:8000
 | `DATABASE_URL` | Postgres connection string (required) |
 | `AUTH_ALLOWED_EMAILS` | Comma-separated emails allowed to sign in. Leave empty to disable auth locally. |
 | `AUTH_SECRET` | Secret for signing session cookies (required when allowlist is set). |
+| `OPENAI_API_KEY` | Enables cook-mode cloud speech (STT + Q&A). **Required for iPhone.** |
+| `OPENAI_VOICE_MODEL` | Optional; default `gpt-4o-mini` |
+| `OPENAI_TRANSCRIBE_MODEL` | Optional; default `gpt-4o-mini-transcribe` |
 | `PORT` | Set by Railway in production |
 
 ## Deploy (Railway)
@@ -49,7 +52,7 @@ Project: **adventurous-acceptance** → service **recipes**
 ```powershell
 railway link -p adventurous-acceptance -s recipes
 railway up          # when ready to deploy
-railway variables   # set DATABASE_URL, AUTH_ALLOWED_EMAILS, AUTH_SECRET
+railway variables   # set DATABASE_URL, AUTH_ALLOWED_EMAILS, AUTH_SECRET, OPENAI_API_KEY
 ```
 
 Start command (also in `railway.json`):

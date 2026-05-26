@@ -55,7 +55,7 @@ a:hover { text-decoration: underline; }
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.65rem 1rem;
+  padding: max(0.65rem, env(safe-area-inset-top)) 1rem 0.65rem;
   background: var(--accent);
   color: #fff;
   box-shadow: var(--shadow);
@@ -100,6 +100,7 @@ main {
   max-width: 920px;
   margin: 0 auto;
   padding: 1rem 1rem 2.5rem;
+  padding-bottom: max(2.5rem, env(safe-area-inset-bottom));
 }
 
 /* Page structure */
@@ -822,6 +823,206 @@ main {
 }
 .voice-control-card .btn { margin-top: 0.25rem; }
 
+/* Cook mode — mobile-first */
+.cook-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* Room for fixed voice dock on cook screen */
+body.cook-mode main {
+  padding-bottom: calc(8.5rem + env(safe-area-inset-bottom));
+}
+body.cook-mode.cook-voice-active main {
+  padding-bottom: calc(12rem + env(safe-area-inset-bottom));
+}
+
+.cook-quick-bar {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.15rem 0 0.35rem;
+  scrollbar-width: none;
+}
+.cook-quick-bar::-webkit-scrollbar { display: none; }
+
+.quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  min-height: var(--touch);
+  padding: 0.4rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.servings-chip #servings-val {
+  font-size: 1.15rem;
+  min-width: 1.5ch;
+  text-align: center;
+}
+.chip-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.btn-chip {
+  cursor: pointer;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.toggle-chip { cursor: pointer; }
+.toggle-chip input { accent-color: var(--accent); }
+
+.icon-btn {
+  width: var(--touch);
+  height: var(--touch);
+  min-width: var(--touch);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.voice-dock {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  z-index: 200;
+  transform: translateX(-50%);
+  width: min(100%, 920px);
+  padding: 0.65rem 1rem max(0.65rem, env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 24px rgba(20, 48, 54, 0.14);
+}
+.voice-dock.voice-active {
+  border-color: var(--accent-soft);
+  box-shadow: 0 -8px 28px rgba(20, 48, 54, 0.18);
+}
+.voice-dock.voice-paused {
+  border-color: var(--muted);
+  background: var(--surface-raised);
+}
+.voice-dock.voice-paused .voice-status {
+  color: var(--muted);
+}
+.voice-dock.voice-listening .voice-mic-btn {
+  background: var(--accent);
+  color: #fff;
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+.voice-dock-top { margin-bottom: 0.5rem; }
+.voice-dock .voice-status {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.voice-dock .voice-label {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+.voice-dock-controls {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.dock-btn {
+  min-height: 52px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--accent);
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+.voice-mic-btn { font-size: 1.5rem; }
+.voice-dock .voice-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.35;
+  text-align: center;
+}
+.btn.danger-soft {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid transparent;
+}
+
+.voice-settings-dialog {
+  border: none;
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  max-width: 440px;
+  width: calc(100% - 1.5rem);
+  max-height: min(90dvh, 640px);
+  overflow: auto;
+  box-shadow: var(--shadow-lg);
+}
+.voice-settings-dialog::backdrop { background: rgba(20, 48, 54, 0.45); }
+
+.voice-settings-details {
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.65rem;
+}
+.voice-settings-details summary {
+  cursor: pointer;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  list-style: none;
+}
+.voice-settings-details summary::-webkit-details-marker { display: none; }
+.voice-settings-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem 0.75rem;
+  margin-top: 0.75rem;
+}
+.voice-settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.voice-settings-form label.full-width { grid-column: 1 / -1; }
+.voice-settings-form select,
+.voice-settings-form input,
+.voice-settings-form textarea {
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--text);
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+.voice-settings-form #vs-save { grid-column: 1 / -1; }
+@media (max-width: 520px) {
+  .voice-settings-form { grid-template-columns: 1fr; }
+}
+
 .cook-content .cook-steps li::marker {
   font-weight: 700;
   color: var(--accent);
@@ -873,7 +1074,10 @@ code {
   .no-print,
   .site-header,
   .cook-toolbar,
+  .cook-quick-bar,
+  .voice-dock,
   .voice-panel,
+  .voice-settings-details,
   .voice-unsupported,
   .cook-tip,
   dialog { display: none !important; }

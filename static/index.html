@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#143036">
   <meta name="description" content="Import, scale, convert, and cook your recipes.">
   <title>Recipes</title>
@@ -32,6 +32,18 @@
       <p id="auth-error" class="error hidden" role="alert"></p>
       <div class="dialog-actions">
         <button type="submit" class="btn primary">Continue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="voice-settings-dialog" class="voice-settings-dialog" aria-labelledby="vs-dialog-title">
+    <form method="dialog" id="voice-settings-form">
+      <h2 id="vs-dialog-title">Voice assistant</h2>
+      <p class="guide-text">Saved to your account. HD voices sound best; Standard is faster.</p>
+      <div class="voice-settings-form" id="vs-dialog-fields"></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="vs-dialog-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="vs-dialog-save">Save</button>
       </div>
     </form>
   </dialog>

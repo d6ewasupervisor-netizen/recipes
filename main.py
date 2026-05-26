@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi.responses import Response as RawResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
@@ -22,6 +23,13 @@ from auth import (
     verify_session_token,
 )
 from db import close_pool, get_conn, init_db, open_pool
+from cook_voice import SpeakRequest, VoiceCommandResult, interpret_command, synthesize_speech, transcribe_audio, voice_enabled
+from voice_settings import (
+    OPENAI_TTS_VOICES,
+    VoiceSettings,
+    load_voice_settings,
+    save_voice_settings,
+)
 from parser import ParseError
 
 load_dotenv()
@@ -98,6 +106,24 @@ class AuthStatus(BaseModel):
     auth_required: bool
     authenticated: bool
     email: str | None = None
+
+
+class VoiceStatus(BaseModel):
+    enabled: bool
+
+
+class CookVoiceRequest(BaseModel):
+    recipe_id: int
+    transcript: str
+    phase: str = "ingredients"
+    index: int = 0
+    servings: int = 4
+    unit_system: str = "imperial"
+    session_context: dict[str, Any] | None = None
+
+
+class VoiceOptionsResponse(BaseModel):
+    voices: list[str]
 
 
 SiteAuth = Annotated[str | None, Depends(require_auth)]
@@ -301,6 +327,107 @@ def delete_recipe(recipe_id: int, _auth: SiteAuth) -> DeleteResponse:
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/cook/voice/status")
+def cook_voice_status(_auth: SiteAuth) -> VoiceStatus:
+    return VoiceStatus(enabled=voice_enabled())
+
+
+@app.get("/api/cook/voice/options")
+def cook_voice_options(_auth: SiteAuth) -> VoiceOptionsResponse:
+    return VoiceOptionsResponse(voices=list(OPENAI_TTS_VOICES))
+
+
+@app.get("/api/cook/voice/settings")
+def get_cook_voice_settings(auth: SiteAuth) -> VoiceSettings:
+    with get_conn() as conn:
+        return load_voice_settings(conn, auth)
+
+
+@app.put("/api/cook/voice/settings")
+def put_cook_voice_settings(settings: VoiceSettings, auth: SiteAuth) -> VoiceSettings:
+    with get_conn() as conn:
+        saved = save_voice_settings(conn, auth, settings)
+        conn.commit()
+    return saved
+
+
+@app.post("/api/cook/speak")
+def cook_speak(body: SpeakRequest, auth: SiteAuth) -> RawResponse:
+    if not voice_enabled():
+        raise HTTPException(status_code=503, detail="Voice assistant is not configured")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+    with get_conn() as conn:
+        settings = load_voice_settings(conn, auth)
+    if not settings.use_cloud_tts:
+        raise HTTPException(status_code=400, detail="Cloud TTS disabled in settings")
+    try:
+        audio = synthesize_speech(text, settings)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Speech synthesis failed") from exc
+    return RawResponse(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/api/cook/voice")
+def cook_voice_command(body: CookVoiceRequest, auth: SiteAuth) -> VoiceCommandResult:
+    if not voice_enabled():
+        raise HTTPException(status_code=503, detail="Voice assistant is not configured")
+    transcript = body.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Empty transcript")
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, title, source_url, image_url, base_servings, total_time, prep_time,
+                   cook_time, ingredients, instructions, notes, unit_system, layout
+            FROM recipes WHERE id = %s
+            """,
+            (body.recipe_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    recipe = _row_to_recipe(row)
+    with get_conn() as conn:
+        settings = load_voice_settings(conn, auth)
+    try:
+        return interpret_command(
+            recipe,
+            transcript,
+            phase=body.phase,
+            index=body.index,
+            servings=body.servings,
+            unit_system=body.unit_system,
+            settings=settings,
+            session_context=body.session_context,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Voice interpretation failed") from exc
+
+
+@app.post("/api/cook/transcribe")
+async def cook_transcribe(
+    _auth: SiteAuth,
+    audio: UploadFile = File(...),
+) -> dict[str, str]:
+    if not voice_enabled():
+        raise HTTPException(status_code=503, detail="Voice assistant is not configured")
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty audio")
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Audio too large")
+
+    filename = audio.filename or "audio.webm"
+    try:
+        text = transcribe_audio(data, filename=filename)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Transcription failed") from exc
+    return {"transcript": text}
 
 
 @app.get("/data/densities.json")

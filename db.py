@@ -47,6 +47,9 @@ CREATE INDEX IF NOT EXISTS idx_recipes_title ON recipes (lower(title));
 
 
 def init_db():
+    from voice_settings import SETTINGS_SCHEMA
+
     with get_conn() as conn:
         conn.execute(SCHEMA)
+        conn.execute(SETTINGS_SCHEMA)
         conn.commit()
