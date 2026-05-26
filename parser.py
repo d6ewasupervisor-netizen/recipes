@@ -5,7 +5,8 @@ from typing import Any
 from recipe_scrapers import scrape_html
 
 import convert
-from fetch import fetch_html, fetch_jina_page, is_youtube_url, normalize_url
+from fetch import fetch_jina_page, is_youtube_url, iter_html_sources, normalize_url
+from roundup_extract import discover_recipe_urls, looks_like_listicle
 from schema_extract import best_recipe_from_html
 from text_extract import parse_markdown_recipe, parse_structured_text
 from wprm_extract import extract_wprm, extract_wprm_json
@@ -126,49 +127,12 @@ def _try_scrape_html(html: str, url: str) -> dict[str, Any] | None:
         return None
 
 
-def parse_url(url: str) -> dict[str, Any]:
-    original_url = url.strip()
-
-    if is_youtube_url(original_url):
-        try:
-            data = parse_youtube(original_url)
-            return _from_partial(data, original_url)
-        except YouTubeParseError as exc:
-            raise ParseError(str(exc)) from exc
-
-    fetch_url, fragment = normalize_url(original_url)
-    html: str | None = None
-    try:
-        html = fetch_html(fetch_url)
-    except Exception:
-        try:
-            jina_page = fetch_jina_page(fetch_url)
-            markdown_recipe = parse_markdown_recipe(
-                jina_page["content"],
-                image_url=jina_page.get("image_url"),
-            )
-            if markdown_recipe and _recipe_quality_ok(
-                markdown_recipe["ingredient_lines"], markdown_recipe["instruction_lines"]
-            ):
-                return _build_recipe(
-                    title=markdown_recipe.get("title")
-                    or jina_page.get("title")
-                    or "Untitled Recipe",
-                    source_url=original_url,
-                    image_url=markdown_recipe.get("image_url"),
-                    base_servings=4,
-                    prep_time=None,
-                    cook_time=None,
-                    total_time=None,
-                    ingredient_lines=markdown_recipe["ingredient_lines"],
-                    instruction_lines=markdown_recipe["instruction_lines"],
-                )
-        except Exception as exc:
-            raise ParseError(f"Could not fetch page: {exc}") from exc
-        raise ParseError(
-            "Could not find a recipe on this page. The site may block imports or hide the recipe from structured data."
-        )
-
+def _extract_from_html(
+    html: str,
+    fetch_url: str,
+    original_url: str,
+    fragment: str | None,
+) -> dict[str, Any] | None:
     strategies: list[dict[str, Any] | None] = [
         best_recipe_from_html(html, fetch_url),
         extract_wprm(html, fragment),
@@ -183,7 +147,114 @@ def parse_url(url: str) -> dict[str, Any]:
     if scraped:
         scraped["source_url"] = original_url
         return scraped
+    return None
 
+
+def _try_jina_recipe(fetch_url: str, original_url: str) -> dict[str, Any] | None:
+    jina_page = fetch_jina_page(fetch_url)
+    markdown_recipe = parse_markdown_recipe(
+        jina_page["content"],
+        image_url=jina_page.get("image_url"),
+    )
+    if not markdown_recipe or not _recipe_quality_ok(
+        markdown_recipe["ingredient_lines"], markdown_recipe["instruction_lines"]
+    ):
+        return None
+    return _build_recipe(
+        title=markdown_recipe.get("title") or jina_page.get("title") or "Untitled Recipe",
+        source_url=original_url,
+        image_url=markdown_recipe.get("image_url"),
+        base_servings=4,
+        prep_time=None,
+        cook_time=None,
+        total_time=None,
+        ingredient_lines=markdown_recipe["ingredient_lines"],
+        instruction_lines=markdown_recipe["instruction_lines"],
+    )
+
+
+def _collect_html(fetch_url: str) -> list[str]:
+    htmls: list[str] = []
+    seen: set[int] = set()
+    for html, _source in iter_html_sources(fetch_url):
+        key = hash(html[:5000])
+        if key in seen:
+            continue
+        seen.add(key)
+        htmls.append(html)
+    return htmls
+
+
+def expand_import_url(url: str) -> list[str]:
+    """Return one or more recipe URLs to import from a link (expands roundups)."""
+    original_url = url.strip()
+    fetch_url, _fragment = normalize_url(original_url)
+
+    try:
+        parse_url(original_url, _follow_links=False)
+        return [original_url]
+    except ParseError:
+        pass
+
+    htmls = _collect_html(fetch_url)
+    for html in htmls:
+        if looks_like_listicle(html, fetch_url):
+            discovered = discover_recipe_urls(html, fetch_url)
+            if discovered:
+                return discovered
+
+    for html in htmls:
+        discovered = discover_recipe_urls(html, fetch_url)
+        if len(discovered) >= 3:
+            return discovered
+
+    raise ParseError(
+        "Could not find a recipe on this page. The site may block imports or hide the recipe from structured data."
+    )
+
+
+def parse_url(url: str, *, _follow_links: bool = True) -> dict[str, Any]:
+    original_url = url.strip()
+
+    if is_youtube_url(original_url):
+        try:
+            data = parse_youtube(original_url)
+            return _from_partial(data, original_url)
+        except YouTubeParseError as exc:
+            raise ParseError(str(exc)) from exc
+
+    fetch_url, fragment = normalize_url(original_url)
+    errors: list[str] = []
+
+    for html, source in iter_html_sources(fetch_url):
+        try:
+            recipe = _extract_from_html(html, fetch_url, original_url, fragment)
+            if recipe:
+                return recipe
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+
+    try:
+        recipe = _try_jina_recipe(fetch_url, original_url)
+        if recipe:
+            return recipe
+    except Exception as exc:
+        errors.append(f"jina: {exc}")
+
+    if _follow_links:
+        htmls = _collect_html(fetch_url)
+        for html in htmls:
+            child_urls = discover_recipe_urls(html, fetch_url)
+            if len(child_urls) < 3:
+                continue
+            for child_url in child_urls[:50]:
+                try:
+                    return parse_url(child_url, _follow_links=False)
+                except ParseError:
+                    continue
+
+    if errors:
+        raise ParseError(errors[-1])
     raise ParseError(
         "Could not find a recipe on this page. The site may block imports or hide the recipe from structured data."
     )
@@ -218,16 +289,21 @@ def parse_manual(payload: dict[str, Any]) -> dict[str, Any]:
 
 if __name__ == "__main__":
     tests = [
-        "https://overthefirecooking.com/chili-cheese-dog/#wprm-recipe-container-23371",
-        "https://www.angrybbq.com/smoked-cream-cheese/",
-        "https://www.youtube.com/watch?v=lG8x9vPfTZo",
+        "https://www.foodiecrush.com/best-bbq-chicken/#recipe",
+        "https://pinchofyum.com/dinner-recipes-when-you-dont-know-what-to-cook",
+        "https://pinchofyum.com/chicken-wontons-in-spicy-chili-sauce",
+        "https://www.allrecipes.com/recipe/25202/beef-stroganoff-iii/",
     ]
     for test_url in tests:
         try:
-            result = parse_url(test_url)
-            print(
-                f"OK: {result['title']} — {len(result['ingredients'])} ingredients, "
-                f"{len(result['instructions'])} steps"
-            )
+            expanded = expand_import_url(test_url)
+            if len(expanded) == 1:
+                result = parse_url(expanded[0])
+                print(
+                    f"OK: {result['title']} — {len(result['ingredients'])} ingredients, "
+                    f"{len(result['instructions'])} steps"
+                )
+            else:
+                print(f"EXPAND: {test_url} -> {len(expanded)} recipe links")
         except ParseError as exc:
             print(f"FAIL: {test_url}\n  {exc}")

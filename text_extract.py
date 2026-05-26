@@ -4,11 +4,11 @@ import re
 from typing import Any
 
 INGREDIENT_HEADER = re.compile(
-    r"^(?:##\s*)?(?:ingredients?|what you(?:'ll| will) need|you will need)\s*:?\s*$",
+    r"^(?:#{1,6}\s*)?(?:ingredients?|what you(?:'ll| will) need|you will need)\s*:?\s*$",
     re.I,
 )
 INSTRUCTION_HEADER = re.compile(
-    r"^(?:##\s*)?(?:instructions?|directions?|method|steps?|how to make)\s*:?\s*$",
+    r"^(?:#{1,6}\s*)?(?:instructions?|directions?|method|steps?|how to make)\s*:?\s*$",
     re.I,
 )
 QUANTITY_LINE = re.compile(
@@ -126,7 +126,7 @@ def parse_markdown_recipe(text: str, *, image_url: str | None = None) -> dict[st
 
 def parse_structured_text(text: str) -> dict[str, Any] | None:
     lines = [ln.strip() for ln in text.splitlines()]
-    markdown_mode = any(line.startswith("## ") for line in lines)
+    markdown_mode = any(re.match(r"^#{1,6}\s", line) for line in lines)
     mode = None
     ingredients: list[str] = []
     instructions: list[str] = []
@@ -140,13 +140,16 @@ def parse_structured_text(text: str) -> dict[str, Any] | None:
         if INSTRUCTION_HEADER.match(line):
             mode = "instructions"
             continue
+        if line.startswith("#"):
+            if mode is None:
+                continue
+            if re.match(r"^#{1,6}\s", line) and not INGREDIENT_HEADER.match(line) and not INSTRUCTION_HEADER.match(line):
+                continue
         if mode == "ingredients":
             bullet = MARKDOWN_BULLET.match(line)
             if bullet:
                 line = line[bullet.end() :].strip()
             elif markdown_mode:
-                if line.startswith("#"):
-                    continue
                 if not QUANTITY_LINE.match(line):
                     continue
             if markdown_mode and not _looks_like_ingredient_line(line):
@@ -158,10 +161,14 @@ def parse_structured_text(text: str) -> dict[str, Any] | None:
             step = MARKDOWN_STEP.match(line)
             if step:
                 line = line[step.end() :].strip()
-            elif markdown_mode:
-                continue
             else:
-                line = STEP_LINE.sub("", line)
+                bullet = MARKDOWN_BULLET.match(line)
+                if bullet:
+                    line = line[bullet.end() :].strip()
+                elif markdown_mode:
+                    line = STEP_LINE.sub("", line)
+                    if not line:
+                        continue
             if _is_markdown_noise(line) or len(line) < 8:
                 continue
             instructions.append(line)

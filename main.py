@@ -229,6 +229,15 @@ def parse_recipe_url(body: ParseUrlRequest, _auth: SiteAuth) -> Recipe:
     return Recipe(**data)
 
 
+@app.post("/api/recipes/expand-url")
+def expand_recipe_url(body: ParseUrlRequest, _auth: SiteAuth) -> dict[str, list[str]]:
+    try:
+        urls = recipe_parser.expand_import_url(body.url)
+    except ParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"urls": urls}
+
+
 @app.post("/api/recipes/manual")
 def parse_recipe_manual(body: ManualParseRequest, _auth: SiteAuth) -> Recipe:
     try:

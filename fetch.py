@@ -1,7 +1,8 @@
-"""Fetch web pages with browser-like headers."""
+"""Fetch web pages with browser-like headers and JS rendering fallbacks."""
 
+import os
 import re
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -40,6 +41,48 @@ def _fetch_with_requests(url: str) -> str:
 
 def fetch_html(url: str) -> str:
     return _fetch_with_requests(url)
+
+
+def fetch_html_rendered(url: str) -> str:
+    """Load the page in headless Chromium so client-rendered recipe cards appear."""
+    if os.environ.get("PLAYWRIGHT_DISABLED", "").lower() in {"1", "true", "yes"}:
+        raise RuntimeError("Playwright rendering is disabled")
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT * 1000)
+            for selector in (
+                ".wprm-recipe-container",
+                "[class*='wprm-recipe']",
+                "[class*='mv-create']",
+                "script[type='application/ld+json']",
+            ):
+                try:
+                    page.wait_for_selector(selector, timeout=8000)
+                    break
+                except Exception:
+                    continue
+            page.wait_for_timeout(1500)
+            return page.content()
+        finally:
+            browser.close()
+
+
+def iter_html_sources(url: str) -> Iterator[tuple[str, str]]:
+    """Yield (html, source_name) using progressively heavier fetch strategies."""
+    try:
+        yield _fetch_with_requests(url), "requests"
+    except Exception:
+        pass
+
+    try:
+        yield fetch_html_rendered(url), "playwright"
+    except Exception:
+        pass
 
 
 def _image_from_jina_metadata(metadata: Any) -> str | None:

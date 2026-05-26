@@ -428,6 +428,43 @@ function parseImportUrls(text) {
     .filter(Boolean);
 }
 
+async function expandImportUrl(url) {
+  let res = await fetch("/api/recipes/expand-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ url }),
+  });
+  if (res.status === 401) {
+    await promptSignIn();
+    res = await fetch("/api/recipes/expand-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ url }),
+    });
+  }
+  if (!res.ok) {
+    const detail = (await res.json()).detail || res.statusText;
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  return data.urls || [url];
+}
+
+async function resolveImportUrls(urls) {
+  const resolved = [];
+  for (const url of urls) {
+    try {
+      const expanded = await expandImportUrl(url);
+      resolved.push(...expanded);
+    } catch {
+      resolved.push(url);
+    }
+  }
+  return resolved;
+}
+
 async function parseRecipeUrl(url) {
   let res = await fetch("/api/recipes/parse", {
     method: "POST",
@@ -457,22 +494,27 @@ async function parseRecipeUrl(url) {
   return res.json();
 }
 
-async function bulkImportRecipes(urls, statusEl, formEl) {
-  const total = urls.length;
+async function bulkImportRecipes(urls, statusEl, formEl, { alreadyExpanded = false } = {}) {
   const results = [];
   formEl.querySelector("button[type=submit]").disabled = true;
   formEl.querySelector("#url-input").disabled = true;
 
   statusEl.innerHTML = `<div class="bulk-import-progress">
-    <p class="status-msg" id="bulk-import-current">${icon("time")} Starting import…</p>
+    <p class="status-msg" id="bulk-import-current">${icon("time")} Preparing import…</p>
     <ul class="bulk-import-log" id="bulk-import-log"></ul>
   </div>`;
 
   const currentEl = document.getElementById("bulk-import-current");
   const logEl = document.getElementById("bulk-import-log");
 
-  for (let i = 0; i < urls.length; i++) {
-    const url = urls[i];
+  if (!alreadyExpanded) {
+    currentEl.innerHTML = `${icon("time")} Expanding roundup pages…`;
+  }
+  const importUrls = alreadyExpanded ? urls : await resolveImportUrls(urls);
+  const total = importUrls.length;
+
+  for (let i = 0; i < importUrls.length; i++) {
+    const url = importUrls[i];
     currentEl.innerHTML = `${icon("time")} Importing ${i + 1} of ${total}…`;
     try {
       const recipe = await parseRecipeUrl(url);
@@ -513,7 +555,7 @@ function renderImport() {
 
   app.innerHTML = `<div class="view import-view">
     ${pageHeader("Import recipes", "Paste one or more links — we pull ingredients and steps automatically.")}
-    ${guide("Supports 400+ recipe sites, JSON-LD pages, WP Recipe Maker, and YouTube (transcript + description). Paste multiple URLs, one per line, to import your whole collection at once.")}
+    ${guide("Works on most recipe sites — including JavaScript-heavy pages and roundup lists that link to many recipes. Paste one roundup URL to import every recipe on the page, or one URL per line for a custom list.")}
 
     <form id="url-form" class="panel">
       <h2 class="panel-title">${icon("link")} From URLs</h2>
@@ -569,7 +611,12 @@ function renderImport() {
 
     status.innerHTML = `<p class="status-msg">${icon("time")} Fetching and parsing recipe…</p>`;
     try {
-      draftRecipe = await parseRecipeUrl(urls[0]);
+      const expanded = await expandImportUrl(urls[0]);
+      if (expanded.length > 1) {
+        await bulkImportRecipes(expanded, status, urlForm, { alreadyExpanded: true });
+        return;
+      }
+      draftRecipe = await parseRecipeUrl(expanded[0]);
       location.hash = "#/edit/new";
     } catch (err) {
       if (err.parseFailed) {
