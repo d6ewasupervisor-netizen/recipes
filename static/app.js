@@ -172,13 +172,19 @@ function bindThemeToggle() {
 
 function positionToolsMenu() {
   const menu = document.getElementById("tools-menu");
+  const backdrop = document.getElementById("tools-menu-backdrop");
   const header = document.querySelector(".site-header");
-  if (!menu || !window.matchMedia("(max-width: 720px)").matches) {
-    if (menu) menu.style.top = "";
-    return;
+  if (!header) return;
+
+  const bottom = header.getBoundingClientRect().bottom;
+  if (backdrop) backdrop.style.top = `${bottom}px`;
+
+  if (!menu) return;
+  if (window.matchMedia("(max-width: 720px)").matches) {
+    menu.style.top = `${bottom + 6}px`;
+  } else {
+    menu.style.top = "";
   }
-  const bottom = (header || menu).getBoundingClientRect().bottom;
-  menu.style.top = `${bottom + 6}px`;
 }
 
 function ensureToolsMenuBackdrop() {
@@ -199,8 +205,12 @@ function closeToolsMenu() {
   const menu = document.getElementById("tools-menu");
   const btn = document.getElementById("tools-menu-btn");
   const backdrop = document.getElementById("tools-menu-backdrop");
+  document.body.classList.remove("tools-menu-open");
   if (menu) menu.hidden = true;
-  if (backdrop) backdrop.hidden = true;
+  if (backdrop) {
+    backdrop.hidden = true;
+    backdrop.style.top = "";
+  }
   if (btn) btn.setAttribute("aria-expanded", "false");
   if (toolsMenuCloseHandler) {
     document.removeEventListener("click", toolsMenuCloseHandler);
@@ -220,6 +230,7 @@ function bindToolsMenu() {
     closeToolsMenu();
     if (open) {
       const backdrop = ensureToolsMenuBackdrop();
+      document.body.classList.add("tools-menu-open");
       menu.hidden = false;
       backdrop.hidden = false;
       btn.setAttribute("aria-expanded", "true");

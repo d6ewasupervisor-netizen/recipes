@@ -141,17 +141,25 @@ body.cook-mode { --header-h: var(--cook-header-h); }
 
 .tools-menu-wrap { position: relative; }
 
+/* Dims recipe content only — sits below header (z-index 100) so Tools menu stays clickable */
 .tools-menu-backdrop {
   position: fixed;
-  inset: 0;
-  z-index: 299;
-  background: rgba(20, 48, 54, 0.35);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.35);
   border: none;
   padding: 0;
   margin: 0;
   cursor: default;
 }
 .tools-menu-backdrop[hidden] { display: none !important; }
+
+body.tools-menu-open .site-header {
+  z-index: 110;
+}
 
 .tools-menu {
   position: absolute;
@@ -168,7 +176,7 @@ body.cook-mode { --header-h: var(--cook-header-h); }
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
   padding: 0.5rem;
-  z-index: 300;
+  z-index: 2;
   box-sizing: border-box;
 }
 
@@ -182,6 +190,7 @@ body.cook-mode { --header-h: var(--cook-header-h); }
     min-width: 0;
     max-width: none;
     max-height: min(65dvh, calc(100dvh - 6rem - env(safe-area-inset-bottom)));
+    z-index: 120;
   }
 }
 .tools-menu[hidden] { display: none !important; }
