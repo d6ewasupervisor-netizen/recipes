@@ -312,6 +312,55 @@ async function loadRecipe(id) {
   return api(`/api/recipes/${id}`);
 }
 
+function groupIngredients(ingredients) {
+  const groups = new Map();
+  ingredients.forEach((ing) => {
+    const key = ing.group || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ing);
+  });
+  return groups;
+}
+
+function renderIngRow(ing, recipe) {
+  const hidden = recipe.layout?.hidden_ingredient_ids?.includes(ing.id);
+  return `<div class="ing-row" data-id="${escapeHtml(ing.id)}">
+    <label class="ing-hide-label">
+      <input type="checkbox" class="hide-ing" ${hidden ? "checked" : ""} aria-label="Hide ingredient" title="Hide when cooking">
+      <span>Hide</span>
+    </label>
+    <div class="ing-fields">
+      <div class="ing-field ing-qty-field">
+        <label>Qty</label>
+        <input type="text" class="ing-qty" value="${ing.quantity ?? ""}" inputmode="decimal" aria-label="Quantity">
+      </div>
+      <div class="ing-field ing-unit-field">
+        <label>Unit</label>
+        <input type="text" class="ing-unit" value="${ing.unit ?? ""}" aria-label="Unit" placeholder="cup">
+      </div>
+      <div class="ing-field ing-item-field">
+        <label>Item</label>
+        <input type="text" class="ing-item" value="${escapeHtml(ing.item)}" aria-label="Ingredient">
+      </div>
+      <div class="ing-field ing-group-field">
+        <label>Section</label>
+        <input type="text" class="ing-group" value="${escapeHtml(ing.group ?? "")}" placeholder="e.g. Frosting" aria-label="Section">
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderIngTableRow(ing, recipe) {
+  const hidden = recipe.layout?.hidden_ingredient_ids?.includes(ing.id);
+  return `<tr class="ing-row" data-id="${escapeHtml(ing.id)}">
+    <td class="col-hide"><input type="checkbox" class="hide-ing" ${hidden ? "checked" : ""} aria-label="Hide ingredient" title="Hide when cooking"></td>
+    <td class="col-qty"><input type="text" class="ing-qty" value="${ing.quantity ?? ""}" aria-label="Quantity"></td>
+    <td class="col-unit"><input type="text" class="ing-unit" value="${ing.unit ?? ""}" aria-label="Unit" placeholder="cup"></td>
+    <td><input type="text" class="ing-item" value="${escapeHtml(ing.item)}" aria-label="Ingredient"></td>
+    <td class="col-group"><input type="text" class="ing-group" value="${escapeHtml(ing.group ?? "")}" placeholder="Section" aria-label="Group"></td>
+  </tr>`;
+}
+
 function renderEditForm(recipe, id) {
   const isNew = id === "new";
   setNav([
@@ -319,23 +368,24 @@ function renderEditForm(recipe, id) {
     ...(isNew ? [] : [{ href: `#/cook/${id}`, label: "Cook", icon: "servings" }]),
   ]);
 
-  const ingRows = recipe.ingredients
-    .map(
-      (ing) => `<tr data-id="${escapeHtml(ing.id)}">
-      <td class="col-hide"><input type="checkbox" class="hide-ing" ${recipe.layout?.hidden_ingredient_ids?.includes(ing.id) ? "checked" : ""} aria-label="Hide ingredient" title="Hide when cooking"></td>
-      <td class="col-qty"><input type="text" class="ing-qty" value="${ing.quantity ?? ""}" aria-label="Quantity"></td>
-      <td class="col-unit"><input type="text" class="ing-unit" value="${ing.unit ?? ""}" aria-label="Unit" placeholder="cup"></td>
-      <td><input type="text" class="ing-item" value="${escapeHtml(ing.item)}" aria-label="Ingredient"></td>
-      <td class="col-group"><input type="text" class="ing-group" value="${escapeHtml(ing.group ?? "")}" placeholder="Section" aria-label="Group"></td>
-    </tr>`
-    )
+  const ingGroups = groupIngredients(recipe.ingredients);
+  const ingTableRows = recipe.ingredients.map((ing) => renderIngTableRow(ing, recipe)).join("");
+
+  const ingSectionHubs = [...ingGroups.entries()]
+    .map(([group, ings]) => {
+      const label = group || "General";
+      return `<section class="ing-section-hub" data-group="${escapeHtml(group)}">
+        <h3 class="ing-section-title">${escapeHtml(label)}</h3>
+        <div class="ing-cards">${ings.map((ing) => renderIngRow(ing, recipe)).join("")}</div>
+      </section>`;
+    })
     .join("");
 
   const stepRows = recipe.instructions
     .map(
       (s) => `<li draggable="true" data-step="${s.step}">
       <span class="drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span>
-      <textarea class="step-text" rows="2" aria-label="Step ${s.step}">${escapeHtml(s.text)}</textarea>
+      <textarea class="step-text" rows="3" aria-label="Step ${s.step}">${escapeHtml(s.text)}</textarea>
     </li>`
     )
     .join("");
@@ -349,43 +399,57 @@ function renderEditForm(recipe, id) {
     )}
     ${isNew ? guide("Imported recipes open here first so you can fix anything before saving.") : ""}
 
+    <nav class="edit-hub-nav no-print" aria-label="Edit sections">
+      <button type="button" class="edit-hub-tab active" data-hub="details">${icon("settings")}<span>Details</span></button>
+      <button type="button" class="edit-hub-tab" data-hub="ingredients">${icon("servings")}<span>Ingredients</span></button>
+      <button type="button" class="edit-hub-tab" data-hub="steps">${icon("bookmark")}<span>Steps</span></button>
+    </nav>
+
     <form id="edit-form" class="panel">
-      <div class="field">
-        <label for="edit-title">Title</label>
-        <input type="text" id="edit-title" value="${escapeHtml(recipe.title)}" required>
-      </div>
-      <div class="field">
-        <label for="edit-servings">Base servings</label>
-        <input type="number" id="edit-servings" value="${recipe.base_servings}" min="1">
-        <span class="field-hint">Used as the default when you open Cook mode</span>
-      </div>
-      <div class="field">
-        <label for="edit-notes">Notes</label>
-        <textarea id="edit-notes" rows="3" placeholder="Family favorite, doubles well, etc.">${escapeHtml(recipe.notes ?? "")}</textarea>
-      </div>
-
-      <div class="section-head">
-        <h2>${icon("servings")} Ingredients</h2>
-      </div>
-      <p class="panel-help">Check <strong>Hide</strong> for items you don't want in cook/print view. Use <strong>Group</strong> for sections like "Frosting".</p>
-      <div class="ing-table-wrap">
-        <table class="ing-table">
-          <thead><tr>
-            <th class="col-hide" title="Hide when cooking">Hide</th>
-            <th class="col-qty">Qty</th>
-            <th class="col-unit">Unit</th>
-            <th>Item</th>
-            <th class="col-group">Group</th>
-          </tr></thead>
-          <tbody id="ing-body">${ingRows}</tbody>
-        </table>
+      <div class="edit-hub active" data-hub="details">
+        <div class="field">
+          <label for="edit-title">Title</label>
+          <input type="text" id="edit-title" value="${escapeHtml(recipe.title)}" required>
+        </div>
+        <div class="field">
+          <label for="edit-servings">Base servings</label>
+          <input type="number" id="edit-servings" value="${recipe.base_servings}" min="1">
+          <span class="field-hint">Used as the default when you open Cook mode</span>
+        </div>
+        <div class="field">
+          <label for="edit-notes">Notes</label>
+          <textarea id="edit-notes" rows="3" placeholder="Family favorite, doubles well, etc.">${escapeHtml(recipe.notes ?? "")}</textarea>
+        </div>
       </div>
 
-      <div class="section-head">
-        <h2>${icon("bookmark")} Steps</h2>
+      <div class="edit-hub" data-hub="ingredients">
+        <div class="section-head">
+          <h2>${icon("servings")} Ingredients</h2>
+        </div>
+        <p class="panel-help ing-help-desktop">Check <strong>Hide</strong> for items you don't want in cook/print view. Use <strong>Group</strong> for sections like "Frosting".</p>
+        <p class="panel-help ing-help-mobile">Each section is grouped below. Tap a section to expand and edit ingredients.</p>
+        <div class="ing-table-wrap ing-desktop">
+          <table class="ing-table">
+            <thead><tr>
+              <th class="col-hide" title="Hide when cooking">Hide</th>
+              <th class="col-qty">Qty</th>
+              <th class="col-unit">Unit</th>
+              <th>Item</th>
+              <th class="col-group">Group</th>
+            </tr></thead>
+            <tbody id="ing-body">${ingTableRows}</tbody>
+          </table>
+        </div>
+        <div class="ing-section-hubs ing-mobile">${ingSectionHubs}</div>
       </div>
-      <p class="panel-help">Drag the ⋮⋮ handle to reorder steps.</p>
-      <ol id="step-list" class="step-list">${stepRows}</ol>
+
+      <div class="edit-hub" data-hub="steps">
+        <div class="section-head">
+          <h2>${icon("bookmark")} Steps</h2>
+        </div>
+        <p class="panel-help">Drag the ⋮⋮ handle to reorder steps.</p>
+        <ol id="step-list" class="step-list">${stepRows}</ol>
+      </div>
 
       <div class="form-actions">
         <button type="submit" class="btn primary btn-lg">${icon("bookmark")} Save recipe</button>
@@ -395,7 +459,10 @@ function renderEditForm(recipe, id) {
     </form>
   </div>`;
 
+  setupEditHubNav();
   setupStepDragDrop();
+  setupStepTextareas();
+  setupIngSectionHubs();
 
   document.getElementById("edit-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -420,9 +487,14 @@ function renderEditForm(recipe, id) {
   }
 }
 
+function isMobileEditLayout() {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
 function collectEditForm(recipe, id) {
   const hidden = [];
-  const ingredients = [...document.querySelectorAll("#ing-body tr")].map((row) => {
+  const rowSelector = isMobileEditLayout() ? ".ing-mobile .ing-row" : "#ing-body .ing-row";
+  const ingredients = [...document.querySelectorAll(rowSelector)].map((row) => {
     const ingId = row.dataset.id;
     if (row.querySelector(".hide-ing").checked) hidden.push(ingId);
     const qtyVal = row.querySelector(".ing-qty").value;
@@ -452,6 +524,63 @@ function collectEditForm(recipe, id) {
     instructions: steps,
     layout: { ...recipe.layout, hidden_ingredient_ids: hidden, step_order: steps.map((s) => s.step) },
   };
+}
+
+function setupEditHubNav() {
+  const tabs = document.querySelectorAll(".edit-hub-tab");
+  const hubs = document.querySelectorAll(".edit-hub");
+  const storageKey = "edit-hub-active";
+
+  function activate(hubId) {
+    tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.hub === hubId));
+    hubs.forEach((hub) => hub.classList.toggle("active", hub.dataset.hub === hubId));
+    try {
+      sessionStorage.setItem(storageKey, hubId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => activate(tab.dataset.hub));
+  });
+
+  if (window.matchMedia("(max-width: 640px)").matches) {
+    const saved = sessionStorage.getItem(storageKey);
+    if (saved && [...tabs].some((t) => t.dataset.hub === saved)) activate(saved);
+  }
+}
+
+function setupIngSectionHubs() {
+  document.querySelectorAll(".ing-section-hub").forEach((hub, i) => {
+    const title = hub.querySelector(".ing-section-title");
+    const cards = hub.querySelector(".ing-cards");
+    if (!title || !cards) return;
+
+    const details = document.createElement("details");
+    details.className = "ing-section-details";
+    details.open = i === 0;
+
+    const summary = document.createElement("summary");
+    summary.className = "ing-section-summary";
+    summary.innerHTML = title.outerHTML + `<span class="ing-section-count">${cards.children.length}</span>`;
+    title.remove();
+
+    details.appendChild(summary);
+    details.appendChild(cards);
+    hub.appendChild(details);
+  });
+}
+
+function setupStepTextareas() {
+  document.querySelectorAll(".step-text").forEach((ta) => {
+    const resize = () => {
+      ta.style.height = "auto";
+      ta.style.height = `${ta.scrollHeight}px`;
+    };
+    ta.addEventListener("input", resize);
+    resize();
+  });
 }
 
 function setupStepDragDrop() {
