@@ -1,6 +1,7 @@
 """Fetch web pages with browser-like headers."""
 
 import re
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -41,7 +42,17 @@ def fetch_html(url: str) -> str:
     return _fetch_with_requests(url)
 
 
-def fetch_jina_markdown(url: str) -> str:
+def _image_from_jina_metadata(metadata: Any) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("og:image", "og:image:url", "twitter:image", "twitter:image:src"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+    return None
+
+
+def fetch_jina_page(url: str) -> dict[str, str | None]:
     """Fetch page content via Jina Reader when the origin blocks datacenter IPs."""
     response = requests.get(
         f"{JINA_READER_BASE}{url}",
@@ -51,11 +62,29 @@ def fetch_jina_markdown(url: str) -> str:
     response.raise_for_status()
     payload = response.json()
     data = payload.get("data") if isinstance(payload, dict) else None
-    if isinstance(data, dict):
-        content = data.get("content")
-        if isinstance(content, str) and content.strip():
-            return content
-    raise RuntimeError("Jina Reader returned no content")
+    if not isinstance(data, dict):
+        raise RuntimeError("Jina Reader returned no data")
+
+    content = data.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("Jina Reader returned no content")
+
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    title = metadata.get("og:title") or data.get("title")
+    if isinstance(title, str):
+        title = title.strip() or None
+    else:
+        title = None
+
+    return {
+        "content": content,
+        "image_url": _image_from_jina_metadata(metadata),
+        "title": title if isinstance(title, str) else None,
+    }
+
+
+def fetch_jina_markdown(url: str) -> str:
+    return fetch_jina_page(url)["content"]  # type: ignore[return-value]
 
 
 def normalize_url(url: str) -> tuple[str, str | None]:

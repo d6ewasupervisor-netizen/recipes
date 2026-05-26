@@ -37,6 +37,7 @@ YOUTUBE_STEP_SPLIT = re.compile(
     r"(?<=\.)\s+(?=First|Next|Then|Now|Okay|All right|Let's)",
     re.I,
 )
+MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\((https://[^)]+)\)")
 
 
 def _clean_text(text: str) -> str:
@@ -91,12 +92,34 @@ def _markdown_title(text: str) -> str | None:
     return None
 
 
-def parse_markdown_recipe(text: str) -> dict[str, Any] | None:
+def hero_image_from_markdown(text: str) -> str | None:
+    ingredients_pos = text.find("## Ingredients")
+    head = text[:ingredients_pos] if ingredients_pos > 0 else text[:8000]
+    candidates: list[str] = []
+    for url in MARKDOWN_IMAGE.findall(head):
+        low = url.lower()
+        if "/step" in low or "step-" in low or "/160x90/" in low or "mstile-" in low:
+            continue
+        if any(size in url for size in ("1500x0", "1280x0", "1200x0", "3x4", "4x3", "16x9")):
+            candidates.append(url)
+    if candidates:
+        return candidates[0]
+    for url in MARKDOWN_IMAGE.findall(head):
+        low = url.lower()
+        if "/step" in low or "step-" in low or "/160x90/" in low:
+            continue
+        if "allrecipes.com/thmb/" in low or "imagesvc.meredithcorp.io" in low:
+            return url
+    return None
+
+
+def parse_markdown_recipe(text: str, *, image_url: str | None = None) -> dict[str, Any] | None:
     structured = parse_structured_text(text)
     if structured:
         title = _markdown_title(text)
         if title:
             structured["title"] = title
+        structured["image_url"] = image_url or hero_image_from_markdown(text)
         return structured
     return None
 

@@ -407,7 +407,7 @@ def import_probe():
 
     import requests
 
-    from fetch import BROWSER_HEADERS, fetch_html, fetch_jina_markdown
+    from fetch import BROWSER_HEADERS, fetch_html, fetch_jina_page
     from schema_extract import best_recipe_from_html
     from text_extract import parse_markdown_recipe
 
@@ -416,12 +416,18 @@ def import_probe():
     jina_ok = False
     jina_ingredients = 0
     jina_error: str | None = None
+    jina_image_url: str | None = None
     try:
-        markdown = fetch_jina_markdown(url)
-        jina_recipe = parse_markdown_recipe(markdown)
+        jina_page = fetch_jina_page(url)
+        jina_image_url = jina_page.get("image_url")
+        jina_recipe = parse_markdown_recipe(
+            jina_page["content"],
+            image_url=jina_image_url,
+        )
         if jina_recipe:
             jina_ok = True
             jina_ingredients = len(jina_recipe["ingredient_lines"])
+            jina_image_url = jina_recipe.get("image_url")
     except Exception as exc:
         jina_error = str(exc)
 
@@ -429,6 +435,7 @@ def import_probe():
         "requests_status": response.status_code,
         "jina_ok": jina_ok,
         "jina_ingredients": jina_ingredients,
+        "jina_image_url": jina_image_url,
         "jina_error": jina_error,
         "has_recipe_jsonld": bool(best_recipe_from_html(response.text, url)),
     }
@@ -437,6 +444,7 @@ def import_probe():
         result["parse"] = "ok"
         result["title"] = recipe["title"]
         result["ingredients"] = len(recipe["ingredients"])
+        result["image_url"] = recipe.get("image_url")
     except ParseError as exc:
         result["parse"] = str(exc)
     try:

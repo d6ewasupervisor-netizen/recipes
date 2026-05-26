@@ -5,7 +5,7 @@ from typing import Any
 from recipe_scrapers import scrape_html
 
 import convert
-from fetch import fetch_html, fetch_jina_markdown, is_youtube_url, normalize_url
+from fetch import fetch_html, fetch_jina_page, is_youtube_url, normalize_url
 from schema_extract import best_recipe_from_html
 from text_extract import parse_markdown_recipe, parse_structured_text
 from wprm_extract import extract_wprm, extract_wprm_json
@@ -142,15 +142,20 @@ def parse_url(url: str) -> dict[str, Any]:
         html = fetch_html(fetch_url)
     except Exception:
         try:
-            markdown = fetch_jina_markdown(fetch_url)
-            markdown_recipe = parse_markdown_recipe(markdown)
+            jina_page = fetch_jina_page(fetch_url)
+            markdown_recipe = parse_markdown_recipe(
+                jina_page["content"],
+                image_url=jina_page.get("image_url"),
+            )
             if markdown_recipe and _recipe_quality_ok(
                 markdown_recipe["ingredient_lines"], markdown_recipe["instruction_lines"]
             ):
                 return _build_recipe(
-                    title=markdown_recipe.get("title") or "Untitled Recipe",
+                    title=markdown_recipe.get("title")
+                    or jina_page.get("title")
+                    or "Untitled Recipe",
                     source_url=original_url,
-                    image_url=None,
+                    image_url=markdown_recipe.get("image_url"),
                     base_servings=4,
                     prep_time=None,
                     cook_time=None,
