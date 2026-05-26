@@ -651,20 +651,68 @@ async function releaseWakeLock() {
   }
 }
 
+function clearHeaderTools() {
+  const el = document.getElementById("header-tools");
+  if (el) {
+    el.hidden = true;
+    el.innerHTML = "";
+  }
+}
+
 function stopCookAssistant() {
   if (cookAssistant) {
     cookAssistant.stop();
     cookAssistant = null;
   }
   voiceUi = { active: false, label: "", message: "", listening: false };
-  document.body.classList.remove("cook-voice-active");
   document.body.classList.remove("cook-mode");
+}
+
+function mountCookHeader({ voiceSupported, voiceHint, wakeSupported, voiceBackend }) {
+  const el = document.getElementById("header-tools");
+  if (!el) return;
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="cook-quick-bar no-print" aria-label="Cook controls">
+      <div class="quick-chip servings-chip">
+        <button type="button" id="servings-down" class="icon-btn" aria-label="Fewer servings">${icon("remove")}</button>
+        <span id="servings-val" aria-live="polite"></span>
+        <button type="button" id="servings-up" class="icon-btn" aria-label="More servings">${icon("add")}</button>
+        <span class="chip-label">servings</span>
+      </div>
+      <button type="button" id="unit-toggle" class="quick-chip btn-chip" aria-label="Toggle units">${icon("units")} <span id="unit-chip-label"></span></button>
+      ${
+        wakeSupported
+          ? `<label class="quick-chip btn-chip toggle-chip"><input type="checkbox" id="wake-lock"> ${icon("wakelock")} Awake</label>`
+          : ""
+      }
+      <button type="button" id="print-btn" class="quick-chip btn-chip" aria-label="Print">${icon("print")} Print</button>
+      ${
+        voiceBackend.enabled
+          ? `<button type="button" id="voice-settings-open" class="quick-chip btn-chip" aria-label="Voice settings">${icon("settings")}</button>`
+          : ""
+      }
+    </div>
+    ${
+      voiceSupported
+        ? `<div id="voice-dock" class="voice-toolbar no-print" aria-live="polite">
+      <p id="voice-status" class="voice-status">Tap to cook hands-free</p>
+      <div id="voice-dock-controls" class="voice-toolbar-controls" hidden>
+        <button type="button" id="voice-back" class="dock-btn" aria-label="Previous">${icon("remove")}</button>
+        <button type="button" id="voice-listen" class="dock-btn voice-mic-btn" aria-label="Speak now">${icon("mic")}</button>
+        <button type="button" id="voice-next" class="dock-btn" aria-label="Next">${icon("add")}</button>
+      </div>
+      <button type="button" id="voice-toggle" class="btn voice-start-btn primary">${icon("mic")} Start voice</button>
+      <p id="voice-label" class="voice-label"></p>
+      <p class="voice-hint">${voiceHint}</p>
+    </div>`
+        : `<p class="voice-unsupported no-print">Voice needs a microphone and <code>OPENAI_API_KEY</code> on the server.</p>`
+    }`;
 }
 
 function updateVoicePanel() {
   const dock = document.getElementById("voice-dock");
   if (!dock) return;
-  document.body.classList.toggle("cook-voice-active", voiceUi.active);
   dock.classList.toggle("voice-active", voiceUi.active);
   dock.classList.toggle("voice-paused", voiceUi.paused);
   dock.classList.toggle("voice-listening", voiceUi.listening && !voiceUi.paused);
@@ -797,6 +845,7 @@ function applyVoiceHighlight(highlight) {
 
 async function renderCook(id) {
   stopCookAssistant();
+  clearHeaderTools();
   document.body.classList.add("cook-mode");
 
   setNav([
@@ -815,59 +864,14 @@ async function renderCook(id) {
   const voiceHint = voiceBackend.enabled
     ? "Say <strong>hold on</strong> to pause, <strong>I'm back</strong> to resume. <strong>Next</strong> to advance."
     : "Add <code>OPENAI_API_KEY</code> on the server for iPhone. Say <strong>next</strong> to advance.";
-  const voiceOptions = voiceBackend.enabled
-    ? `<option value="alloy"${voiceSettings.tts_voice === "alloy" ? " selected" : ""}>Alloy</option>
-         <option value="ash"${voiceSettings.tts_voice === "ash" ? " selected" : ""}>Ash</option>
-         <option value="coral"${voiceSettings.tts_voice === "coral" ? " selected" : ""}>Coral</option>
-         <option value="echo"${voiceSettings.tts_voice === "echo" ? " selected" : ""}>Echo</option>
-         <option value="fable"${voiceSettings.tts_voice === "fable" ? " selected" : ""}>Fable</option>
-         <option value="onyx"${voiceSettings.tts_voice === "onyx" ? " selected" : ""}>Onyx</option>
-         <option value="nova"${voiceSettings.tts_voice === "nova" ? " selected" : ""}>Nova</option>
-         <option value="sage"${voiceSettings.tts_voice === "sage" ? " selected" : ""}>Sage</option>
-         <option value="shimmer"${voiceSettings.tts_voice === "shimmer" ? " selected" : ""}>Shimmer</option>`
-    : "";
+  mountCookHeader({ voiceSupported, voiceHint, wakeSupported, voiceBackend });
+  const servingsVal = document.getElementById("servings-val");
+  if (servingsVal) servingsVal.textContent = cookState.servings;
+  const unitChip = document.getElementById("unit-chip-label");
+  if (unitChip) unitChip.textContent = cookState.unitSystem;
 
   app.innerHTML = `<div class="view cook-view">
     <article id="cook-content" class="cook-content"></article>
-
-    <div class="cook-quick-bar no-print" aria-label="Cook controls">
-      <div class="quick-chip servings-chip">
-        <button type="button" id="servings-down" class="icon-btn" aria-label="Fewer servings">${icon("remove")}</button>
-        <span id="servings-val" aria-live="polite">${cookState.servings}</span>
-        <button type="button" id="servings-up" class="icon-btn" aria-label="More servings">${icon("add")}</button>
-        <span class="chip-label">servings</span>
-      </div>
-      <button type="button" id="unit-toggle" class="quick-chip btn-chip" aria-label="Toggle units">${icon("units")} <span id="unit-chip-label">${cookState.unitSystem}</span></button>
-      ${
-        wakeSupported
-          ? `<label class="quick-chip btn-chip toggle-chip"><input type="checkbox" id="wake-lock"> ${icon("wakelock")} Awake</label>`
-          : ""
-      }
-      <button type="button" id="print-btn" class="quick-chip btn-chip" aria-label="Print">${icon("print")} Print</button>
-      ${
-        voiceBackend.enabled
-          ? `<button type="button" id="voice-settings-open" class="quick-chip btn-chip" aria-label="Voice settings">${icon("settings")}</button>`
-          : ""
-      }
-    </div>
-
-    ${
-      voiceSupported
-        ? `<footer id="voice-dock" class="voice-dock no-print" aria-live="polite">
-      <div class="voice-dock-top">
-        <p id="voice-status" class="voice-status">Tap to cook hands-free</p>
-        <p id="voice-label" class="voice-label"></p>
-      </div>
-      <div id="voice-dock-controls" class="voice-dock-controls" hidden>
-        <button type="button" id="voice-back" class="dock-btn" aria-label="Previous">${icon("remove")}</button>
-        <button type="button" id="voice-listen" class="dock-btn voice-mic-btn" aria-label="Speak now">${icon("mic")}</button>
-        <button type="button" id="voice-next" class="dock-btn" aria-label="Next">${icon("add")}</button>
-      </div>
-      <button type="button" id="voice-toggle" class="btn primary btn-block voice-start-btn">${icon("mic")} Start voice</button>
-      <p class="voice-hint">${voiceHint}</p>
-    </footer>`
-        : `<p class="voice-unsupported no-print">Voice needs a microphone and <code>OPENAI_API_KEY</code> on the server.</p>`
-    }
   </div>`;
 
   function drawCook() {
@@ -1037,6 +1041,8 @@ async function renderCook(id) {
 
 async function route() {
   stopCookAssistant();
+  clearHeaderTools();
+  document.body.classList.remove("cook-mode");
   await releaseWakeLock();
   const hash = location.hash.slice(1) || "/";
   const parts = hash.split("/").filter(Boolean);

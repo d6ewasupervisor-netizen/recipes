@@ -34,6 +34,10 @@ body {
   color: var(--text);
   line-height: 1.55;
   min-height: 100dvh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 a { color: var(--accent-hover); text-decoration-thickness: 1px; }
@@ -49,20 +53,31 @@ a:hover { text-decoration: underline; }
 .icon-lg { width: 1.75rem; height: 1.75rem; }
 .icon-xl { width: 2.5rem; height: 2.5rem; }
 
-/* Header */
+/* Header — fixed; only main scrolls */
 .site-header {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow);
+  z-index: 100;
+}
+
+.site-header-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   padding: max(0.65rem, env(safe-area-inset-top)) 1rem 0.65rem;
-  background: var(--accent);
-  color: #fff;
-  box-shadow: var(--shadow);
-  position: sticky;
-  top: 0;
-  z-index: 100;
 }
+
+.header-tools {
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 0.5rem 1rem max(0.55rem, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.header-tools[hidden] { display: none !important; }
 
 .logo {
   display: flex;
@@ -97,7 +112,12 @@ a:hover { text-decoration: underline; }
 #main-nav a:hover { background: rgba(255,255,255,0.12); text-decoration: none; }
 
 main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   max-width: 920px;
+  width: 100%;
   margin: 0 auto;
   padding: 1rem 1rem 2.5rem;
   padding-bottom: max(2.5rem, env(safe-area-inset-bottom));
@@ -830,14 +850,6 @@ main {
   gap: 0.75rem;
 }
 
-/* Room for fixed voice dock on cook screen */
-body.cook-mode main {
-  padding-bottom: calc(8.5rem + env(safe-area-inset-bottom));
-}
-body.cook-mode.cook-voice-active main {
-  padding-bottom: calc(12rem + env(safe-area-inset-bottom));
-}
-
 .cook-quick-bar {
   display: flex;
   flex-wrap: nowrap;
@@ -897,69 +909,109 @@ body.cook-mode.cook-voice-active main {
   cursor: pointer;
 }
 
-.voice-dock {
-  position: fixed;
-  left: 50%;
-  bottom: 0;
-  z-index: 200;
-  transform: translateX(-50%);
-  width: min(100%, 920px);
-  padding: 0.65rem 1rem max(0.65rem, env(safe-area-inset-bottom));
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -6px 24px rgba(20, 48, 54, 0.14);
+/* Cook tools + voice assistant in site header */
+.header-tools .cook-quick-bar {
+  padding: 0;
 }
-.voice-dock.voice-active {
-  border-color: var(--accent-soft);
-  box-shadow: 0 -8px 28px rgba(20, 48, 54, 0.18);
-}
-.voice-dock.voice-paused {
-  border-color: var(--muted);
-  background: var(--surface-raised);
-}
-.voice-dock.voice-paused .voice-status {
-  color: var(--muted);
-}
-.voice-dock.voice-listening .voice-mic-btn {
-  background: var(--accent);
+
+.header-tools .quick-chip,
+.header-tools .btn-chip {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
   color: #fff;
+  box-shadow: none;
+}
+.header-tools .chip-label { color: rgba(255, 255, 255, 0.72); }
+.header-tools .icon-btn {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.header-tools .toggle-chip input { accent-color: #fff; }
+.header-tools .voice-unsupported {
+  margin: 0;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.78);
+}
+.header-tools .voice-unsupported code {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.voice-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
+}
+.voice-toolbar.voice-active .voice-status { font-weight: 700; }
+.voice-toolbar.voice-paused .voice-status { opacity: 0.85; }
+.voice-toolbar.voice-listening .voice-mic-btn {
+  background: #fff;
+  color: var(--accent);
   animation: voice-pulse 1.2s ease-in-out infinite;
 }
-.voice-dock-top { margin-bottom: 0.5rem; }
-.voice-dock .voice-status {
+.voice-toolbar .voice-status {
+  flex: 1 1 8rem;
+  min-width: 0;
   margin: 0;
-  font-size: 0.95rem;
-  font-weight: 700;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.voice-dock .voice-label {
-  margin: 0.15rem 0 0;
-  font-size: 0.85rem;
-  color: var(--accent);
+.voice-toolbar .voice-label {
+  flex: 1 1 100%;
+  margin: -0.15rem 0 0;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.82);
   font-weight: 600;
 }
-.voice-dock-controls {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr 1fr;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
+.voice-toolbar .voice-label:empty { display: none; }
+.voice-toolbar-controls {
+  display: flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+.voice-toolbar .voice-start-btn {
+  flex-shrink: 0;
+  min-height: var(--touch);
+  padding: 0.4rem 0.85rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.voice-toolbar .voice-start-btn.primary {
+  background: #fff;
+  color: var(--accent);
+  border: none;
+}
+.voice-toolbar .voice-start-btn.danger-soft {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
 }
 .dock-btn {
-  min-height: 52px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--surface-raised);
-  color: var(--accent);
-  font-size: 1.25rem;
+  width: var(--touch);
+  height: var(--touch);
+  min-height: var(--touch);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 1.2rem;
   cursor: pointer;
+  padding: 0;
 }
-.voice-mic-btn { font-size: 1.5rem; }
-.voice-dock .voice-hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.8rem;
-  color: var(--muted);
-  line-height: 1.35;
-  text-align: center;
+.voice-mic-btn { font-size: 1.35rem; }
+.voice-toolbar .voice-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.3;
 }
+.voice-toolbar .voice-hint strong { font-weight: 600; color: #fff; }
 .btn.danger-soft {
   background: var(--danger-bg);
   color: var(--danger);
@@ -1075,7 +1127,8 @@ code {
   .site-header,
   .cook-toolbar,
   .cook-quick-bar,
-  .voice-dock,
+  .header-tools,
+  .voice-toolbar,
   .voice-panel,
   .voice-settings-details,
   .voice-unsupported,
