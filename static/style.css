@@ -768,6 +768,60 @@ main {
   line-height: 1.65;
 }
 .cook-content .cook-steps li { margin-bottom: 1rem; }
+.cook-content .ing-list li.voice-current,
+.cook-content .cook-steps li.voice-current {
+  background: var(--accent-soft-bg);
+  border-radius: var(--radius-sm);
+  margin: 0 -0.35rem;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.voice-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  margin-bottom: 1.25rem;
+  box-shadow: var(--shadow);
+}
+.voice-panel.voice-active {
+  border-color: var(--accent);
+  background: var(--accent-soft-bg);
+}
+.voice-panel.voice-listening {
+  animation: voice-pulse 1.5s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: var(--shadow); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+}
+.voice-status {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin: 0 0 0.25rem;
+}
+.voice-label {
+  margin: 0 0 0.5rem;
+  color: var(--accent);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.voice-hint {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-soft);
+  line-height: 1.45;
+}
+.voice-unsupported {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 1rem;
+}
+.voice-control-card .btn { margin-top: 0.25rem; }
+
 .cook-content .cook-steps li::marker {
   font-weight: 700;
   color: var(--accent);
@@ -819,6 +873,8 @@ code {
   .no-print,
   .site-header,
   .cook-toolbar,
+  .voice-panel,
+  .voice-unsupported,
   .cook-tip,
   dialog { display: none !important; }
 

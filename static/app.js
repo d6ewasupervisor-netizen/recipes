@@ -4,6 +4,7 @@ import {
   convertIngredient,
   convertInstructionText,
 } from "./convert.js";
+import { CookVoiceAssistant, voiceAssistantSupported } from "./voice-assistant.js";
 
 const app = document.getElementById("app");
 const nav = document.getElementById("main-nav");
@@ -16,6 +17,8 @@ let signedInEmail = null;
 let wakeLock = null;
 let draftRecipe = null;
 let cookState = { servings: 4, unitSystem: "imperial", wakeLockOn: false, showImages: false };
+let cookAssistant = null;
+let voiceUi = { active: false, label: "", message: "", listening: false };
 
 function escapeHtml(s) {
   return String(s)
@@ -174,7 +177,7 @@ async function renderList() {
       <ol class="steps-guide getting-started">
         <li><strong>Import</strong> Paste a URL from AllRecipes, NYT Cooking, or hundreds of other sites.</li>
         <li><strong>Edit</strong> Adjust servings, hide ingredients, group sections, and reorder steps.</li>
-        <li><strong>Cook</strong> Scale on the fly, switch to metric, keep your screen awake, and print.</li>
+        <li><strong>Cook</strong> Scale on the fly, switch to metric, hands-free voice guidance, keep your screen awake, and print.</li>
       </ol>
       <a href="#/import" class="btn primary btn-lg">${icon("import")} Import your first recipe</a>
     </div>`;
@@ -639,7 +642,49 @@ async function releaseWakeLock() {
   }
 }
 
+function stopCookAssistant() {
+  if (cookAssistant) {
+    cookAssistant.stop();
+    cookAssistant = null;
+  }
+  voiceUi = { active: false, label: "", message: "", listening: false };
+}
+
+function updateVoicePanel() {
+  const panel = document.getElementById("voice-panel");
+  if (!panel) return;
+  panel.classList.toggle("voice-active", voiceUi.active);
+  panel.classList.toggle("voice-listening", voiceUi.listening);
+  const status = document.getElementById("voice-status");
+  const label = document.getElementById("voice-label");
+  const btn = document.getElementById("voice-toggle");
+  if (status) status.textContent = voiceUi.message || (voiceUi.active ? voiceUi.label : "Hands-free guidance");
+  if (label) label.textContent = voiceUi.active ? voiceUi.label : "";
+  if (btn) {
+    btn.classList.toggle("primary", !voiceUi.active);
+    btn.innerHTML = voiceUi.active
+      ? `${icon("mic")} Stop assistant`
+      : `${icon("mic")} Start voice assistant`;
+  }
+}
+
+function applyVoiceHighlight(highlight) {
+  document.querySelectorAll(".voice-current").forEach((el) => el.classList.remove("voice-current"));
+  if (!highlight) return;
+  const sel =
+    highlight.phase === "ingredients"
+      ? `.ing-list [data-ing-index="${highlight.index}"]`
+      : `.cook-steps [data-step-index="${highlight.index}"]`;
+  const el = document.querySelector(sel);
+  if (el) {
+    el.classList.add("voice-current");
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+}
+
 async function renderCook(id) {
+  stopCookAssistant();
+
   setNav([
     { href: "#/", label: "Recipes", icon: "bookmark" },
     { href: `#/edit/${id}`, label: "Edit", icon: "settings" },
@@ -650,6 +695,7 @@ async function renderCook(id) {
   cookState.unitSystem = recipe.unit_system || "imperial";
 
   const wakeSupported = "wakeLock" in navigator;
+  const voiceSupported = voiceAssistantSupported();
 
   app.innerHTML = `<div class="view cook-view">
     ${pageHeader("Cook mode", "Big text, live scaling, and unit conversion — designed for your phone at the stove.")}
@@ -689,27 +735,54 @@ async function renderCook(id) {
         </label>
         <button type="button" id="print-btn" class="btn primary btn-block" style="margin-top:0.5rem">${icon("print")} Print</button>
       </div>
+
+      ${
+        voiceSupported
+          ? `<div class="control-card voice-control-card">
+        <div class="control-label">${icon("mic")} Voice</div>
+        <button type="button" id="voice-toggle" class="btn btn-block">${icon("mic")} Start voice assistant</button>
+      </div>`
+          : ""
+      }
     </div>
 
+    ${
+      voiceSupported
+        ? `<section id="voice-panel" class="voice-panel no-print" aria-live="polite">
+      <p id="voice-status" class="voice-status">Hands-free guidance</p>
+      <p id="voice-label" class="voice-label"></p>
+      <p class="voice-hint">Say <strong>next</strong> to advance, or ask e.g. “how much sugar?” “oven temperature?” “double the recipe.”</p>
+    </section>`
+        : `<p class="voice-unsupported no-print">Voice assistant needs Chrome or Edge on this device (microphone + speech).</p>`
+    }
+
     <article id="cook-content" class="cook-content"></article>
-    <div class="no-print">${guide("Metric mode converts volumes to grams for common ingredients (e.g. 1 cup flour ≈ 120 g). Temperatures in steps convert too.")}</div>
+    <div class="no-print">${guide(voiceSupported ? "Voice assistant reads ingredients and steps aloud. Metric mode converts volumes to grams for common ingredients." : "Metric mode converts volumes to grams for common ingredients (e.g. 1 cup flour ≈ 120 g). Temperatures in steps convert too.")}</div>
   </div>`;
 
   function drawCook() {
     const hidden = new Set(recipe.layout?.hidden_ingredient_ids || []);
-    const ings = recipe.ingredients
-      .filter((ing) => !hidden.has(ing.id))
-      .map((ing) => {
+    const visibleIngs = recipe.ingredients.filter((ing) => !hidden.has(ing.id));
+    const ings = visibleIngs
+      .map((ing, i) => {
         const scaled = scale(ing.quantity, recipe.base_servings, cookState.servings);
         const conv = convertIngredient(ing, cookState.unitSystem, scaled);
-        return `<li>${escapeHtml(conv.display)}</li>`;
+        return `<li data-ing-index="${i}">${escapeHtml(conv.display)}</li>`;
       })
       .join("");
 
-    const steps = recipe.instructions
-      .map((s) => {
+    const stepOrder = recipe.layout?.step_order;
+    let orderedSteps = [...recipe.instructions];
+    if (stepOrder?.length) {
+      const byStep = new Map(orderedSteps.map((s) => [s.step, s]));
+      orderedSteps = stepOrder.map((n) => byStep.get(n)).filter(Boolean);
+    } else {
+      orderedSteps.sort((a, b) => a.step - b.step);
+    }
+    const steps = orderedSteps
+      .map((s, i) => {
         const text = convertInstructionText(s.text, cookState.unitSystem);
-        return `<li>${escapeHtml(text)}</li>`;
+        return `<li data-step-index="${i}">${escapeHtml(text)}</li>`;
       })
       .join("");
 
@@ -730,6 +803,13 @@ async function renderCook(id) {
     `;
     document.getElementById("servings-val").textContent = cookState.servings;
     document.getElementById("unit-toggle").textContent = cookState.unitSystem;
+    if (cookAssistant) {
+      applyVoiceHighlight(
+        cookAssistant.active
+          ? { phase: cookAssistant.phase, index: cookAssistant.index }
+          : null
+      );
+    }
   }
 
   drawCook();
@@ -757,6 +837,52 @@ async function renderCook(id) {
     drawCook();
   });
 
+  const voiceBtn = document.getElementById("voice-toggle");
+  if (voiceBtn) {
+    voiceBtn.addEventListener("click", async () => {
+      if (cookAssistant?.active) {
+        stopCookAssistant();
+        updateVoicePanel();
+        return;
+      }
+      if (!cookState.wakeLockOn && "wakeLock" in navigator) {
+        const wakeCheckbox = document.getElementById("wake-lock");
+        if (wakeCheckbox) {
+          wakeCheckbox.checked = true;
+          cookState.wakeLockOn = true;
+          await requestWakeLock();
+        }
+      }
+      cookAssistant = new CookVoiceAssistant({
+        recipe,
+        getCookState: () => cookState,
+        setServings: (n) => {
+          cookState.servings = n;
+          drawCook();
+        },
+        setUnitSystem: (s) => {
+          cookState.unitSystem = s;
+          drawCook();
+        },
+        onHighlight: applyVoiceHighlight,
+        onStatus: (s) => {
+          voiceUi = {
+            active: s.active,
+            label: s.label || "",
+            message: s.message || (s.listening ? "Listening…" : ""),
+            listening: !!s.listening,
+          };
+          updateVoicePanel();
+          if (!s.active) cookAssistant = null;
+        },
+      });
+      updateVoicePanel();
+      await cookAssistant.start();
+      if (!cookAssistant?.active) updateVoicePanel();
+    });
+    updateVoicePanel();
+  }
+
   const wakeCheckbox = document.getElementById("wake-lock");
   if (wakeCheckbox) {
     wakeCheckbox.addEventListener("change", async (e) => {
@@ -777,6 +903,7 @@ async function renderCook(id) {
 // --- Router ---
 
 async function route() {
+  stopCookAssistant();
   await releaseWakeLock();
   const hash = location.hash.slice(1) || "/";
   const parts = hash.split("/").filter(Boolean);
