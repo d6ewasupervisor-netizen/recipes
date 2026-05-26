@@ -76,6 +76,7 @@ a:hover { text-decoration: underline; }
   color: #fff;
   box-shadow: var(--shadow);
   z-index: 100;
+  overflow: visible;
 }
 
 .site-header-top {
@@ -139,13 +140,28 @@ body.cook-mode { --header-h: var(--cook-header-h); }
 .header-icon-btn .icon { width: 1.35rem; height: 1.35rem; }
 
 .tools-menu-wrap { position: relative; }
+
+.tools-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 299;
+  background: rgba(20, 48, 54, 0.35);
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: default;
+}
+.tools-menu-backdrop[hidden] { display: none !important; }
+
 .tools-menu {
   position: absolute;
   top: calc(100% + 0.35rem);
   right: 0;
-  min-width: min(18rem, calc(100vw - 2rem));
+  width: min(18rem, calc(100vw - 2rem));
+  min-width: 12rem;
   max-height: min(70dvh, 28rem);
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
@@ -153,6 +169,20 @@ body.cook-mode { --header-h: var(--cook-header-h); }
   box-shadow: var(--shadow-lg);
   padding: 0.5rem;
   z-index: 300;
+  box-sizing: border-box;
+}
+
+/* Phone: full-width panel inside safe area (avoids clipping off-screen left) */
+@media (max-width: 720px) {
+  .tools-menu {
+    position: fixed;
+    left: max(0.75rem, env(safe-area-inset-left));
+    right: max(0.75rem, env(safe-area-inset-right));
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    max-height: min(65dvh, calc(100dvh - 6rem - env(safe-area-inset-bottom)));
+  }
 }
 .tools-menu[hidden] { display: none !important; }
 .tools-menu-item {
@@ -1243,6 +1273,7 @@ code {
   .site-header,
   .cook-toolbar,
   .cook-quick-bar,
+  .tools-menu-backdrop,
   .header-tools,
   .voice-toolbar,
   .voice-panel,
