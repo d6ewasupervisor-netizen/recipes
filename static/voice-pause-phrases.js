@@ -85,6 +85,36 @@ export function isPausePhrase(transcript) {
   return PAUSE_PATTERNS.some((re) => re.test(t));
 }
 
+/** While the assistant is speaking — stop the readout (not necessarily quit cook mode). */
+const INTERRUPT_PATTERNS = [
+  /^stop$/,
+  /^wait$/,
+  /^hold$/,
+  /\bstop reading\b/,
+  /\bstop listing\b/,
+  /\bthat'?s enough\b/,
+  /\benough\b/,
+  /\bskip (that|it|this)\b/,
+  /\bhold on\b/,
+  /\bhang on\b/,
+  /\bhold up\b/,
+  /\bplease hold\b/,
+  /\bplease wait\b/,
+  /\bwait up\b/,
+  /\b(give|gimme) me a (sec|second|minute|moment)\b/,
+  /\bstand by\b/,
+  /\bstandby\b/,
+  /\bcan you wait\b/,
+  /\bnot (right )?now\b/,
+];
+
+export function isInterruptPhrase(transcript) {
+  const t = norm(transcript);
+  if (!t) return false;
+  if (isPausePhrase(transcript)) return true;
+  return INTERRUPT_PATTERNS.some((re) => re.test(t));
+}
+
 export function isResumePhrase(transcript) {
   const t = norm(transcript);
   if (!t) return false;

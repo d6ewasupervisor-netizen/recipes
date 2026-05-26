@@ -230,19 +230,28 @@ export function needsLlm(transcript) {
   if (parseKitchenQuery(transcript)) return false;
   if (FAST_PATTERNS.some((re) => re.test(t))) return false;
   if (/\b(substitut|instead of|swap|replace|can i use|what if)\b/.test(t)) return true;
-  if (/\b(how much|how many|oven|temperature|refrigerat|how long)\b/.test(t)) return true;
-  if (/^(how|what|why|can|should|is|are)\b/.test(t)) return true;
-  return t.split(/\s+/).length > 5;
+  if (/\b(how much|how many|oven|temperature|refrigerat|how long|safe|internal temp)\b/.test(t)) {
+    return true;
+  }
+  if (/\b(technique|mean|difference|equipment|tool|saut[eé]|braise|blanch)\b/.test(t)) return true;
+  if (/^(how|what|why|can|should|is|are|does|explain|tell me)\b/.test(t)) return true;
+  return t.split(/\s+/).length > 4;
+}
+
+export function formatAllIngredients(ctx) {
+  const { visibleIngredients, ingredientDisplay } = ctx;
+  if (!visibleIngredients.length) return "No ingredients to read.";
+  const parts = visibleIngredients.map((ing) => ingredientDisplay(ing));
+  return `Ingredients. ${parts.join(". ")}.`;
 }
 
 export function formatRemainingIngredients(ctx, fromStart) {
   const { visibleIngredients, index, ingredientDisplay } = ctx;
   const slice = fromStart ? visibleIngredients : visibleIngredients.slice(index);
   if (!slice.length) return "No ingredients to read.";
-  const start = fromStart ? 1 : index + 1;
-  const parts = slice.map((ing, i) => `Number ${start + i}: ${ingredientDisplay(ing)}`);
-  const label = fromStart ? "All ingredients" : "Remaining ingredients";
-  return `${label}. ${parts.join(". ")}.`;
+  if (fromStart) return formatAllIngredients(ctx);
+  const parts = slice.map((ing, i) => `${index + i + 1}: ${ingredientDisplay(ing)}`);
+  return `Remaining ingredients. ${parts.join(". ")}.`;
 }
 
 export function formatRemainingSteps(ctx, fromStart) {

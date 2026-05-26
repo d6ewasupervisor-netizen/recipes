@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from cooking_basics import try_cooking_basics_answer
 from kitchen_knowledge import (
     filter_ingredients,
     filter_steps_for_section,
@@ -14,24 +15,31 @@ from kitchen_knowledge import (
 )
 
 # Kept short for latency; client mirrors key rules for instant handling.
-SKILLS_PROMPT = """SKILLS (apply without inventing recipe facts):
+SKILLS_PROMPT = """You are an expert home-cooking voice assistant. Answer cooking questions confidently — never say you cannot help with cooking.
+
+RECIPE FACTS (never invent):
 - Navigation: next/back/repeat; read remaining or all ingredients/steps from current index.
-- Kitchen lists (use recipe ingredients/steps only; never invent items):
+- Kitchen lists use recipe ingredients/steps only:
   • Dry/wet: classify by item text and ingredient group labels ("Dry mix", "Wet mix").
   • Sections: crust/pastry, filling, topping, frosting, glaze, sauce, batter, marinade, assembly, garnish.
-  • Match section ingredients via ingredient.group and item/raw text; match section steps via step text or "For the crust:" blocks.
-  • Examples: "read dry ingredients", "list wet ingredients", "crust ingredients", "steps for the filling".
-- Servings: scale all ingredient amounts proportionally (base_servings → current_servings).
-- Units: imperial↔metric; volumes may convert to grams when density_key exists in recipe data.
-- Substitutions: suggest only common safe swaps (butter↔oil, milk↔cream, brown↔white sugar); warn when unsure; never change recipe DB.
-- Temperatures: read from steps/notes; convert F↔C when user unit_system differs.
-- Timing: extract bake/chill/rest times from steps and notes.
-- Print: user says print → action print_recipe (client prints).
+- Servings: scale amounts proportionally (base_servings → current_servings).
+- Units: imperial↔metric; volumes may convert to grams when density_key exists.
+- Temperatures/timing: read from steps/notes; convert F↔C when user unit_system differs.
+- Print: user says print → action print_recipe.
 - Current position: respect session.phase and session.index; "this/that" means current item.
-- Be brief in speech. Do not tell user to say "next" unless they ask for help.
-- In speech text use full words (teaspoon not tsp, tablespoon not tbsp, ounce, cup, degrees Fahrenheit).
-- Pause: hold on, wait, hang on, give me a minute → action pause (stop listening until user resumes).
-- Resume: I'm back, let's go, start again, ok I'm ready → action resume only when session is paused."""
+
+GENERAL COOKING KNOWLEDGE (action answer — use your culinary expertise):
+- Techniques, terms, equipment, tools, food safety, substitutions, doneness temps.
+- Safe internal temps: poultry 165°F; ground meats 160°F; pork 145°F + rest; fish 145°F.
+- Steak: rare 125°F, medium-rare 135°F, medium 145°F, medium-well 155°F, well 160°F+.
+- Prefer recipe data when relevant; otherwise give concise general guidance (2–3 sentences max).
+- Substitutions: common safe swaps only; warn when unsure; never change the recipe database.
+
+VOICE STYLE:
+- Be brief and natural. Do not tell user to say "next" unless they ask for help.
+- In speech use full words (teaspoon not tsp, degrees Fahrenheit not F).
+- Pause: hold on, wait, hang on, hold up, stand by, gimme a minute → action pause.
+- Resume: I'm back, let's go, ok I'm ready → action resume only when session is paused."""
 
 
 def build_session_context(
@@ -100,12 +108,18 @@ def transcript_needs_llm(transcript: str) -> bool:
     for pat in fast:
         if re.search(pat, t):
             return False
+    if try_cooking_basics_answer(transcript):
+        return False
     # Likely needs reasoning: substitutions, comparisons, how/what/why/can
     if re.search(r"\b(substitut|instead of|swap|replace|can i use|what if)\b", t):
         return True
-    if re.search(r"^(how|what|why|can|should|is|are|does)\b", t):
+    if re.search(
+        r"\b(technique|equipment|tool|safe|internal|mean|difference|saut[eé]|braise|blanch)\b", t
+    ):
         return True
-    return len(t.split()) > 6
+    if re.search(r"^(how|what|why|can|should|is|are|does|explain|tell me)\b", t):
+        return True
+    return len(t.split()) > 4
 
 
 def try_kitchen_voice_answer(

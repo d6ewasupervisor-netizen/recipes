@@ -10,6 +10,7 @@ from typing import Any, Literal
 from openai import OpenAI
 from pydantic import BaseModel
 
+from cooking_basics import try_cooking_basics_answer
 from cook_skills import SKILLS_PROMPT, build_session_context, transcript_needs_llm, try_kitchen_voice_answer
 from speech_normalize import normalize_for_speech
 from voice_settings import VoiceSettings
@@ -144,6 +145,10 @@ def interpret_command(
     if kitchen_speech:
         return VoiceCommandResult(action="answer", speech=kitchen_speech)
 
+    basics_speech = try_cooking_basics_answer(transcript)
+    if basics_speech:
+        return VoiceCommandResult(action="answer", speech=basics_speech)
+
     if not transcript_needs_llm(transcript):
         return VoiceCommandResult(action="noop", speech="")
 
@@ -170,6 +175,7 @@ Verbosity: {settings.verbosity} (minimal = no "say next" reminders).
 Return JSON. Actions: next, back, repeat, stop, pause, resume, help, goto_ingredients, goto_steps,
 read_remaining_ingredients, read_remaining_steps, read_all_ingredients, read_all_steps,
 print_recipe, answer, noop.
+For ANY cooking-related question use action "answer" with helpful speech — never noop with empty speech.
 Set index (0-based) when jumping. Set servings/unit_system when changing scale or units.
 Custom phrase overrides: {json.dumps(prefs['custom_commands'], ensure_ascii=False)}"""
 

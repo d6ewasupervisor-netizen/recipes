@@ -5,12 +5,14 @@
 import {
   buildSessionContext,
   COMMAND_HELP,
+  formatAllIngredients,
   formatRemainingIngredients,
   formatRemainingSteps,
   matchLocalCommand,
   needsLlm,
 } from "./cook-commands.js";
-import { isResumePhrase } from "./voice-pause-phrases.js";
+import { tryCookingBasicsAnswer } from "./cooking-basics.js";
+import { isInterruptPhrase, isResumePhrase } from "./voice-pause-phrases.js";
 import { normalizeForSpeech } from "./speech-speak.js";
 import { scale, convertIngredient, convertInstructionText } from "./convert.js";
 
@@ -25,7 +27,7 @@ export const DEFAULT_VOICE_SETTINGS = {
   verbosity: "minimal",
   prompt_once: true,
   listen_seconds: 3.2,
-  speech_rate: 1.0,
+  speech_rate: 1.15,
   push_to_talk: false,
   personality:
     "You are a warm, encouraging cooking companion. Keep replies short and natural.",
@@ -142,6 +144,7 @@ export class CookVoiceAssistant {
     this._speakChain = Promise.resolve();
     this._speakTicket = 0;
     this._speaking = false;
+    this._interruptRec = null;
     this._listenMs = () => Math.round((this.settings.listen_seconds ?? 3.2) * 1000);
   }
 
@@ -385,13 +388,14 @@ export class CookVoiceAssistant {
 
     if (this._verbosity() === "minimal" && this.settings.prompt_once) {
       await this.speak(
-        `${greet}Cooking ${this.recipe.title}. ${ingN} ingredients, ${stepN} steps. Say next to move on.`
+        `${greet}Cooking ${this.recipe.title}. ${ingN} ingredients, ${stepN} steps. ` +
+          `I'll read the ingredients now — say hold on anytime to pause.`
       );
       this._controlsExplained = true;
     } else {
       await this.speak(
-        `${greet}Cooking ${this.recipe.title}. ${ingN} ingredients and ${stepN} steps.` +
-          ` Say next when you're ready, or ask a question anytime.`
+        `${greet}Cooking ${this.recipe.title}. ${ingN} ingredients and ${stepN} steps. ` +
+          `I'll list the ingredients, then we'll go step by step. Ask me anything anytime.`
       );
       this._controlsExplained = true;
     }
@@ -407,6 +411,7 @@ export class CookVoiceAssistant {
     this._speakTicket += 1;
     this._speakChain = Promise.resolve();
     this._speaking = false;
+    this._stopInterruptListen();
     this._abortActiveListen();
     this._releaseMic();
     this._haltSpeechPlayback();
@@ -415,16 +420,159 @@ export class CookVoiceAssistant {
     this._emit({ message: "" });
   }
 
-  speak(text) {
-    if (!text?.trim()) return Promise.resolve();
+  speak(text, opts = {}) {
+    if (!text?.trim()) return Promise.resolve({ status: "done" });
     let done;
     const promise = new Promise((resolve) => {
       done = resolve;
     });
     this._speakChain = this._speakChain
-      .then(() => this._speakOnce(text))
-      .then(done, done);
+      .then(async () => {
+        if (opts.interruptible) return this._speakInterruptible(text);
+        await this._speakOnce(text);
+        return { status: "done" };
+      })
+      .then(done, () => done({ status: "done" }));
     return promise;
+  }
+
+  _startInterruptListen(onInterrupt) {
+    if (!SpeechRecognition || !this.active) return null;
+    const rec = new SpeechRecognition();
+    rec.lang = "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const chunk = normalize(result[0].transcript);
+        if (!chunk) continue;
+        const isQuestion =
+          result.isFinal &&
+          /^(how|what|why|can|should|is|are|does|tell me|explain)\b/.test(chunk) &&
+          chunk.split(/\s+/).length >= 3;
+        if (isInterruptPhrase(chunk) || isQuestion) onInterrupt(chunk);
+      }
+    };
+    rec.onerror = () => {};
+    rec.onend = () => {
+      if (this._interruptRec === rec && this._speaking && this.active) {
+        try {
+          rec.start();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    try {
+      rec.start();
+    } catch {
+      return null;
+    }
+    this._interruptRec = rec;
+    return rec;
+  }
+
+  _stopInterruptListen() {
+    if (this._interruptRec) {
+      try {
+        this._interruptRec.stop();
+      } catch {
+        /* ignore */
+      }
+      this._interruptRec = null;
+    }
+  }
+
+  async _speakInterruptible(text) {
+    const spoken = normalizeForSpeech(text);
+    const ticket = ++this._speakTicket;
+    this._abortActiveListen();
+    this._haltSpeechPlayback();
+    this._speaking = true;
+    this._emit();
+
+    let interruptTranscript = null;
+    const onInterrupt = (chunk) => {
+      if (!interruptTranscript) {
+        interruptTranscript = chunk;
+        this._haltSpeechPlayback();
+      }
+    };
+
+    this._startInterruptListen(onInterrupt);
+
+    try {
+      await this._playSpeech(spoken, ticket);
+    } finally {
+      this._stopInterruptListen();
+      if (ticket === this._speakTicket) {
+        this._speaking = false;
+        this._emit();
+      }
+    }
+
+    if (interruptTranscript) {
+      return { status: "interrupted", transcript: interruptTranscript };
+    }
+    return { status: "done" };
+  }
+
+  async _playSpeech(spoken, ticket) {
+    const stillValid = () => ticket === this._speakTicket;
+
+    if (this.useCloudTts) {
+      try {
+        const res = await fetch("/api/cook/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ text: spoken }),
+        });
+        if (!stillValid()) return;
+        if (res.ok) {
+          const blob = await res.blob();
+          if (!stillValid()) return;
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          this._audio = audio;
+          audio.playbackRate = 1;
+          await new Promise((resolve) => {
+            const finish = () => {
+              URL.revokeObjectURL(url);
+              if (this._audio === audio) this._audio = null;
+              resolve();
+            };
+            audio.onended = finish;
+            audio.onerror = finish;
+            audio.play().catch(finish);
+          });
+          if (!stillValid()) this._haltSpeechPlayback();
+          return;
+        }
+      } catch {
+        /* fallback to browser */
+      }
+    }
+
+    if (!stillValid()) return;
+
+    await new Promise((resolve) => {
+      const utter = new SpeechSynthesisUtterance(spoken);
+      if (this._voice) utter.voice = this._voice;
+      utter.rate = this._speechRate();
+      this._speakResolve = resolve;
+      utter.onend = () => {
+        this._speakResolve = null;
+        resolve();
+      };
+      utter.onerror = () => {
+        this._speakResolve = null;
+        resolve();
+      };
+      speechSynthesis.speak(utter);
+    });
+    if (!stillValid()) this._haltSpeechPlayback();
   }
 
   async _speakOnce(text) {
@@ -435,65 +583,8 @@ export class CookVoiceAssistant {
     this._speaking = true;
     this._emit();
 
-    const stillValid = () => ticket === this._speakTicket;
-
     try {
-      if (this.useCloudTts) {
-        try {
-          const res = await fetch("/api/cook/speak", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ text: spoken }),
-          });
-          if (!stillValid()) return;
-          if (res.ok) {
-            const blob = await res.blob();
-            if (!stillValid()) return;
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            this._audio = audio;
-            audio.playbackRate = 1;
-            await new Promise((resolve) => {
-              const finish = () => {
-                URL.revokeObjectURL(url);
-                if (this._audio === audio) this._audio = null;
-                resolve();
-              };
-              audio.onended = finish;
-              audio.onerror = finish;
-              audio.play().catch(finish);
-            });
-            if (!stillValid()) {
-              this._haltSpeechPlayback();
-            }
-            return;
-          }
-        } catch {
-          /* fallback to browser */
-        }
-      }
-
-      if (!stillValid()) return;
-
-      await new Promise((resolve) => {
-        const utter = new SpeechSynthesisUtterance(spoken);
-        if (this._voice) utter.voice = this._voice;
-        utter.rate = this._speechRate();
-        this._speakResolve = resolve;
-        utter.onend = () => {
-          this._speakResolve = null;
-          resolve();
-        };
-        utter.onerror = () => {
-          this._speakResolve = null;
-          resolve();
-        };
-        speechSynthesis.speak(utter);
-      });
-      if (!stillValid()) {
-        this._haltSpeechPlayback();
-      }
+      await this._playSpeech(spoken, ticket);
     } finally {
       if (ticket === this._speakTicket) {
         this._speaking = false;
@@ -679,14 +770,72 @@ export class CookVoiceAssistant {
 
   async _readRemainingIngredients(fromStart = false) {
     const text = formatRemainingIngredients(this._commandCtx(), fromStart);
-    await this.speak(text);
+    const result = await this.speak(text, { interruptible: true });
+    if (result?.status === "interrupted") {
+      return this._handleInterruptDuringSpeak(result.transcript);
+    }
+    if (fromStart) this.index = this.visibleIngredients.length;
     return true;
   }
 
   async _readRemainingSteps(fromStart = false) {
     const text = formatRemainingSteps(this._commandCtx(), fromStart);
-    await this.speak(text);
+    const result = await this.speak(text, { interruptible: true });
+    if (result?.status === "interrupted") {
+      return this._handleInterruptDuringSpeak(result.transcript);
+    }
     return true;
+  }
+
+  async _handleInterruptDuringSpeak(transcript) {
+    const t = transcript.toLowerCase().trim();
+    if (/^(stop|quit|exit|end assistant)$/.test(t)) {
+      await this.speak("Stopping.");
+      this.stop();
+      return "stop";
+    }
+    if (isInterruptPhrase(transcript)) {
+      await this._enterPause("Okay, I'll wait.");
+      return "pause";
+    }
+    return this._handleCommand(transcript);
+  }
+
+  async _speakIngredientsBlock() {
+    const ings = this.visibleIngredients;
+    if (!ings.length) return false;
+
+    const ctx = this._commandCtx();
+    const slice = ings.slice(this.index);
+    let text;
+    if (this.index === 0) {
+      text = formatAllIngredients(ctx);
+    } else {
+      const parts = slice.map((ing) => this.ingredientDisplay(ing));
+      text = `Remaining ingredients. ${parts.join(". ")}.`;
+    }
+
+    this.onHighlight({ phase: "ingredients", index: this.index });
+    this._emit();
+
+    const result = await this.speak(text, { interruptible: true });
+    if (result?.status === "interrupted") {
+      return this._handleInterruptDuringSpeak(result.transcript);
+    }
+    this.index = ings.length;
+    return true;
+  }
+
+  async _finishIngredientsPhase() {
+    const msg =
+      this._verbosity() === "minimal"
+        ? "Ingredients done. Say next for step one."
+        : "That's all the ingredients. Say next when you're ready for step one.";
+    await this.speak(msg);
+    this.phase = "steps";
+    this.index = 0;
+    this.onHighlight({ phase: "steps", index: 0 });
+    this._emit();
   }
 
   async _applyLocalCommand(cmd) {
@@ -854,6 +1003,7 @@ export class CookVoiceAssistant {
   async _enterPause(speech) {
     this.paused = true;
     this._speakTicket += 1;
+    this._stopInterruptListen();
     this._abortActiveListen();
     this._haltSpeechPlayback();
     this._emit({ message: "Paused — say when you're back" });
@@ -878,7 +1028,6 @@ export class CookVoiceAssistant {
     if (!this.active || this.paused) return;
     const ings = this.visibleIngredients;
     const steps = this.instructions;
-    const suffix = this._promptSuffix();
 
     if (this.phase === "ingredients") {
       if (!ings.length) {
@@ -887,25 +1036,15 @@ export class CookVoiceAssistant {
         return this._speakCurrentItem(intro);
       }
       if (this.index >= ings.length) {
-        const msg =
-          this._verbosity() === "minimal"
-            ? "Ingredients done."
-            : "That's all the ingredients. Say next for step one.";
-        await this.speak(msg);
-        this.phase = "steps";
-        this.index = 0;
-        this.onHighlight({ phase: "steps", index: 0 });
-        this._emit();
-        return;
+        return this._finishIngredientsPhase();
       }
-      const ing = ings[this.index];
-      this.onHighlight({ phase: "ingredients", index: this.index });
-      this._emit();
-      const announce = intro && this._verbosity() !== "minimal";
-      await this.speak(this._ingredientLine(ing, this.index + 1, ings.length, announce) + suffix);
-      return;
+      const handled = await this._speakIngredientsBlock();
+      if (handled === "stop" || handled === "pause") return handled;
+      if (handled !== true) return;
+      return this._finishIngredientsPhase();
     }
 
+    const suffix = this._promptSuffix();
     if (this.index >= steps.length) {
       await this.speak(`You're done. Enjoy your ${this.recipe.title}.`);
       this.stop();
@@ -915,7 +1054,11 @@ export class CookVoiceAssistant {
     this.onHighlight({ phase: "steps", index: this.index });
     this._emit();
     const announce = intro && this._verbosity() !== "minimal";
-    await this.speak(this._stepLine(step, this.index + 1, steps.length, announce) + suffix);
+    const line = this._stepLine(step, this.index + 1, steps.length, announce) + suffix;
+    const result = await this.speak(line, { interruptible: true });
+    if (result?.status === "interrupted") {
+      return this._handleInterruptDuringSpeak(result.transcript);
+    }
   }
 
   async _loopListen() {
@@ -960,7 +1103,6 @@ export class CookVoiceAssistant {
     if (!this.active) return;
     const ings = this.visibleIngredients;
     const steps = this.instructions;
-    const suffix = this._promptSuffix();
 
     if (this.phase === "ingredients") {
       if (!ings.length) {
@@ -969,27 +1111,15 @@ export class CookVoiceAssistant {
         return this._presentCurrent(intro);
       }
       if (this.index >= ings.length) {
-        const msg =
-          this._verbosity() === "minimal"
-            ? "Ingredients done."
-            : "That's all the ingredients. Say next for step one.";
-        await this.speak(msg);
-        this.phase = "steps";
-        this.index = 0;
-        this.onHighlight({ phase: "steps", index: 0 });
-        this._emit();
-        return;
+        return this._finishIngredientsPhase();
       }
-      const ing = ings[this.index];
-      this.onHighlight({ phase: "ingredients", index: this.index });
-      this._emit();
-      const announce = intro && this._verbosity() !== "minimal";
-      const line =
-        this._ingredientLine(ing, this.index + 1, ings.length, announce) + suffix;
-      await this.speak(line);
-      return;
+      const handled = await this._speakIngredientsBlock();
+      if (handled === "stop" || handled === "pause") return handled;
+      if (handled !== true) return;
+      return this._finishIngredientsPhase();
     }
 
+    const suffix = this._promptSuffix();
     if (this.index >= steps.length) {
       await this.speak(`You're done. Enjoy your ${this.recipe.title}.`);
       this.stop();
@@ -1000,7 +1130,10 @@ export class CookVoiceAssistant {
     this._emit();
     const announce = intro && this._verbosity() !== "minimal";
     const line = this._stepLine(step, this.index + 1, steps.length, announce) + suffix;
-    await this.speak(line);
+    const result = await this.speak(line, { interruptible: true });
+    if (result?.status === "interrupted") {
+      return this._handleInterruptDuringSpeak(result.transcript);
+    }
   }
 
   async _handleCommand(transcript) {
@@ -1014,6 +1147,11 @@ export class CookVoiceAssistant {
     const tempAnswer = this._answerTemperature(t);
     if (tempAnswer) {
       await this.speak(tempAnswer);
+      return true;
+    }
+    const basicsAnswer = tryCookingBasicsAnswer(t);
+    if (basicsAnswer) {
+      await this.speak(basicsAnswer);
       return true;
     }
     const timeAnswer = this._answerTime(t);
@@ -1036,7 +1174,15 @@ export class CookVoiceAssistant {
 
     try {
       const result = await this._interpretCloud(transcript);
-      if (!result || (result.action === "noop" && !result.speech)) return false;
+      if (!result || (result.action === "noop" && !result.speech)) {
+        if (needsLlm(transcript)) {
+          await this.speak(
+            "I'm not sure about that — try rephrasing, or ask about this recipe's ingredients or steps."
+          );
+          return true;
+        }
+        return false;
+      }
       return this._applyVoiceResult(result);
     } catch {
       return false;
