@@ -173,8 +173,8 @@ function renderImport() {
   setNav([{ href: "#/", label: "Recipes", icon: "bookmark" }]);
 
   app.innerHTML = `<div class="view import-view">
-    ${pageHeader("Import a recipe", "Paste a link from any supported site — we'll pull ingredients and steps automatically.")}
-    ${guide("Works with 400+ sites via structured recipe data. If a site doesn't parse, you can always paste manually — you'll never be stuck.")}
+    ${pageHeader("Import a recipe", "Paste a link from any recipe site or YouTube — we pull ingredients and steps automatically.")}
+    ${guide("Supports 400+ recipe sites, JSON-LD pages, WP Recipe Maker, and YouTube (transcript + description). Manual paste is only if everything else fails.")}
 
     <form id="url-form" class="panel">
       <h2 class="panel-title">${icon("link")} From a URL</h2>
@@ -188,9 +188,10 @@ function renderImport() {
 
     <div id="import-status"></div>
 
-    <form id="manual-form" class="panel hidden">
-      <h2 class="panel-title">${icon("add")} Paste manually</h2>
-      <p class="panel-help">One ingredient or step per line. Quantities like <code>1 1/2 cups flour</code> are parsed automatically.</p>
+    <details id="manual-details" class="panel hidden">
+      <summary class="panel-title">${icon("add")} Paste manually (last resort)</summary>
+      <p class="panel-help">Only if automatic import fails. One ingredient or step per line.</p>
+    <form id="manual-form">
       <div class="field">
         <label for="manual-title">Title</label>
         <input type="text" id="manual-title" placeholder="e.g. Sunday Pancakes">
@@ -207,9 +208,11 @@ function renderImport() {
       </div>
       <button type="submit" class="btn primary btn-lg">${icon("import")} Continue to editor</button>
     </form>
+    </details>
   </div>`;
 
   const status = document.getElementById("import-status");
+  const manualDetails = document.getElementById("manual-details");
   const manualForm = document.getElementById("manual-form");
 
   document.getElementById("url-form").addEventListener("submit", async (e) => {
@@ -232,9 +235,9 @@ function renderImport() {
       });
     }
     if (res.status === 422) {
-      status.innerHTML = guide("That site didn't parse cleanly — no problem. Fill in the manual form below, or try a different URL.");
-      manualForm.classList.remove("hidden");
-      manualForm.scrollIntoView({ behavior: "smooth", block: "start" });
+      status.innerHTML = guide("We couldn't extract a recipe from that link. Try a direct recipe page URL, or expand manual paste below.");
+      manualDetails.classList.remove("hidden");
+      manualDetails.open = true;
       return;
     }
     if (!res.ok) {

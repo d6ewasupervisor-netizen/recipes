@@ -258,6 +258,14 @@ main {
   font-size: 0.92rem;
 }
 
+.panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+.panel summary::-webkit-details-marker { display: none; }
+.panel details[open] summary { margin-bottom: 0.75rem; }
+
 .field { margin-bottom: 1rem; }
 .field label {
   display: block;
