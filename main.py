@@ -400,6 +400,53 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/health/import-probe")
+def import_probe():
+    """Operational probe for recipe fetch from the deployment environment."""
+    from parser import ParseError, parse_url
+
+    import requests
+
+    from fetch import BROWSER_HEADERS, fetch_html, fetch_jina_markdown
+    from schema_extract import best_recipe_from_html
+    from text_extract import parse_markdown_recipe
+
+    url = "https://www.allrecipes.com/recipe/25202/beef-stroganoff-iii/"
+    response = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
+    jina_ok = False
+    jina_ingredients = 0
+    jina_error: str | None = None
+    try:
+        markdown = fetch_jina_markdown(url)
+        jina_recipe = parse_markdown_recipe(markdown)
+        if jina_recipe:
+            jina_ok = True
+            jina_ingredients = len(jina_recipe["ingredient_lines"])
+    except Exception as exc:
+        jina_error = str(exc)
+
+    result: dict[str, Any] = {
+        "requests_status": response.status_code,
+        "jina_ok": jina_ok,
+        "jina_ingredients": jina_ingredients,
+        "jina_error": jina_error,
+        "has_recipe_jsonld": bool(best_recipe_from_html(response.text, url)),
+    }
+    try:
+        recipe = parse_url(url)
+        result["parse"] = "ok"
+        result["title"] = recipe["title"]
+        result["ingredients"] = len(recipe["ingredients"])
+    except ParseError as exc:
+        result["parse"] = str(exc)
+    try:
+        html = fetch_html(url)
+        result["fetch_html_has_recipe"] = "recipeIngredient" in html
+    except Exception as exc:
+        result["fetch_html_error"] = str(exc)
+    return result
+
+
 @app.get("/api/cook/voice/status")
 def cook_voice_status(_auth: SiteAuth) -> VoiceStatus:
     return VoiceStatus(enabled=voice_enabled())

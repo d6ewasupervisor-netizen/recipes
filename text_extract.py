@@ -4,11 +4,11 @@ import re
 from typing import Any
 
 INGREDIENT_HEADER = re.compile(
-    r"^(?:ingredients?|what you(?:'ll| will) need|you will need)\s*:?\s*$",
+    r"^(?:##\s*)?(?:ingredients?|what you(?:'ll| will) need|you will need)\s*:?\s*$",
     re.I,
 )
 INSTRUCTION_HEADER = re.compile(
-    r"^(?:instructions?|directions?|method|steps?|how to make)\s*:?\s*$",
+    r"^(?:##\s*)?(?:instructions?|directions?|method|steps?|how to make)\s*:?\s*$",
     re.I,
 )
 QUANTITY_LINE = re.compile(
@@ -17,6 +17,8 @@ QUANTITY_LINE = re.compile(
     re.I,
 )
 STEP_LINE = re.compile(r"^\d+[\.)]\s+")
+MARKDOWN_BULLET = re.compile(r"^[*-]\s+")
+MARKDOWN_STEP = re.compile(r"^\d+\.\s+")
 COOKING_VERBS = re.compile(
     r"\b(preheat|smoke|grill|bake|roast|cook|simmer|boil|fry|sear|mix|stir|add|season|score|wrap|place|remove|serve|chop|mince|slice|combine|whisk|reduce|let|set)\b",
     re.I,
@@ -44,8 +46,64 @@ def _clean_text(text: str) -> str:
     return text
 
 
+def _is_markdown_noise(line: str) -> bool:
+    low = line.lower()
+    if not line.strip():
+        return True
+    if line.startswith("!["):
+        return True
+    if line.startswith("[") and "](http" in line:
+        return True
+    if low.startswith("http://") or low.startswith("https://"):
+        return True
+    if "oops!" in low or "something went wrong" in low:
+        return True
+    if re.fullmatch(r"[0-9]+/[0-9]+x", low.replace(" ", "")):
+        return True
+    if low in {"1x", "2x", "1/2x", "next", "prev"}:
+        return True
+    if low.startswith("original recipe"):
+        return True
+    if low.startswith("dotdash meredith"):
+        return True
+    return False
+
+
+def _looks_like_ingredient_line(line: str) -> bool:
+    if _is_markdown_noise(line):
+        return False
+    if QUANTITY_LINE.match(line):
+        return True
+    return bool(
+        re.match(r"^[\d½⅓⅔¼¾⅛⅜⅝⅞]", line)
+        or re.match(r"^\d+\s*\(", line)
+        or re.search(r"\b(salt|pepper|butter|flour|cup|cups|teaspoon|tablespoon|ounce|pound|can)\b", line, re.I)
+    )
+
+
+def _markdown_title(text: str) -> str | None:
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("# "):
+            title = line[2:].strip()
+            title = re.sub(r"\s+Recipe$", "", title, flags=re.I)
+            return title or None
+    return None
+
+
+def parse_markdown_recipe(text: str) -> dict[str, Any] | None:
+    structured = parse_structured_text(text)
+    if structured:
+        title = _markdown_title(text)
+        if title:
+            structured["title"] = title
+        return structured
+    return None
+
+
 def parse_structured_text(text: str) -> dict[str, Any] | None:
     lines = [ln.strip() for ln in text.splitlines()]
+    markdown_mode = any(line.startswith("## ") for line in lines)
     mode = None
     ingredients: list[str] = []
     instructions: list[str] = []
@@ -60,9 +118,30 @@ def parse_structured_text(text: str) -> dict[str, Any] | None:
             mode = "instructions"
             continue
         if mode == "ingredients":
+            bullet = MARKDOWN_BULLET.match(line)
+            if bullet:
+                line = line[bullet.end() :].strip()
+            elif markdown_mode:
+                if line.startswith("#"):
+                    continue
+                if not QUANTITY_LINE.match(line):
+                    continue
+            if markdown_mode and not _looks_like_ingredient_line(line):
+                continue
+            if _is_markdown_noise(line) or len(line) < 4:
+                continue
             ingredients.append(line.lstrip("-•").strip())
         elif mode == "instructions":
-            instructions.append(STEP_LINE.sub("", line))
+            step = MARKDOWN_STEP.match(line)
+            if step:
+                line = line[step.end() :].strip()
+            elif markdown_mode:
+                continue
+            else:
+                line = STEP_LINE.sub("", line)
+            if _is_markdown_noise(line) or len(line) < 8:
+                continue
+            instructions.append(line)
 
     if ingredients and instructions:
         return {"ingredient_lines": ingredients, "instruction_lines": instructions}

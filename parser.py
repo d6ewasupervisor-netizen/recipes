@@ -5,9 +5,9 @@ from typing import Any
 from recipe_scrapers import scrape_html
 
 import convert
-from fetch import fetch_html, is_youtube_url, normalize_url
+from fetch import fetch_html, fetch_jina_markdown, is_youtube_url, normalize_url
 from schema_extract import best_recipe_from_html
-from text_extract import parse_structured_text
+from text_extract import parse_markdown_recipe, parse_structured_text
 from wprm_extract import extract_wprm, extract_wprm_json
 from youtube_extract import YouTubeParseError, parse_youtube
 
@@ -137,10 +137,32 @@ def parse_url(url: str) -> dict[str, Any]:
             raise ParseError(str(exc)) from exc
 
     fetch_url, fragment = normalize_url(original_url)
+    html: str | None = None
     try:
         html = fetch_html(fetch_url)
-    except Exception as exc:
-        raise ParseError(f"Could not fetch page: {exc}") from exc
+    except Exception:
+        try:
+            markdown = fetch_jina_markdown(fetch_url)
+            markdown_recipe = parse_markdown_recipe(markdown)
+            if markdown_recipe and _recipe_quality_ok(
+                markdown_recipe["ingredient_lines"], markdown_recipe["instruction_lines"]
+            ):
+                return _build_recipe(
+                    title=markdown_recipe.get("title") or "Untitled Recipe",
+                    source_url=original_url,
+                    image_url=None,
+                    base_servings=4,
+                    prep_time=None,
+                    cook_time=None,
+                    total_time=None,
+                    ingredient_lines=markdown_recipe["ingredient_lines"],
+                    instruction_lines=markdown_recipe["instruction_lines"],
+                )
+        except Exception as exc:
+            raise ParseError(f"Could not fetch page: {exc}") from exc
+        raise ParseError(
+            "Could not find a recipe on this page. The site may block imports or hide the recipe from structured data."
+        )
 
     strategies: list[dict[str, Any] | None] = [
         best_recipe_from_html(html, fetch_url),

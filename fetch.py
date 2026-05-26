@@ -1,11 +1,11 @@
-"""Fetch web pages with a stable user agent."""
+"""Fetch web pages with browser-like headers."""
 
 import re
 from urllib.parse import urlparse, urlunparse
 
 import requests
 
-# Many recipe sites (e.g. AllRecipes) return 403 for bot-style user agents from server IPs.
+# Many recipe sites (e.g. AllRecipes) block plain requests from datacenter IPs.
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -24,6 +24,38 @@ BROWSER_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 TIMEOUT = 30
+JINA_READER_BASE = "https://r.jina.ai/"
+
+
+def _fetch_with_requests(url: str) -> str:
+    response = requests.get(
+        url,
+        headers=BROWSER_HEADERS,
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def fetch_html(url: str) -> str:
+    return _fetch_with_requests(url)
+
+
+def fetch_jina_markdown(url: str) -> str:
+    """Fetch page content via Jina Reader when the origin blocks datacenter IPs."""
+    response = requests.get(
+        f"{JINA_READER_BASE}{url}",
+        headers={"Accept": "application/json", "Accept-Language": "en-US,en;q=0.9"},
+        timeout=60,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict):
+        content = data.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    raise RuntimeError("Jina Reader returned no content")
 
 
 def normalize_url(url: str) -> tuple[str, str | None]:
@@ -32,16 +64,6 @@ def normalize_url(url: str) -> tuple[str, str | None]:
     fragment = parsed.fragment or None
     fetch = urlunparse(parsed._replace(fragment=""))
     return fetch, fragment
-
-
-def fetch_html(url: str) -> str:
-    response = requests.get(
-        url,
-        headers=BROWSER_HEADERS,
-        timeout=TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.text
 
 
 def youtube_video_id(url: str) -> str | None:
